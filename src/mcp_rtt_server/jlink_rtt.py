@@ -36,6 +36,8 @@ class JLinkRTT:
     # Log file path for RTT output (always in the mcp-rtt-server directory)
     RTT_LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "rtt_output.log")
+    # Max log file size in bytes (default: 1MB)
+    LOG_MAX_SIZE = 1 * 1024 * 1024
 
     def __init__(
         self,
@@ -64,6 +66,7 @@ class JLinkRTT:
         self._ring_buffer: deque[str] = deque(maxlen=ring_buffer_size)
         self._lock = threading.Lock()
         self._log_file = None
+        self._log_size = 0  # Track log file size for rotation
 
     def _connect_jlink(self) -> str:
         """Connect to J-Link hardware.
@@ -122,23 +125,29 @@ class JLinkRTT:
     def _find_rtt_address(self) -> int:
         """Search RAM for the SEGGER RTT control block.
 
-        Manually reads RAM and searches for the "SEGGER RTT" signature,
-        exactly like rtt_t2 does. Returns the address if found, or -1.
+        Reads RAM in chunks to avoid allocating one huge string.
+        Returns the address if found, or -1.
 
         Returns:
             Address of RTT control block, or -1 if not found.
         """
         try:
-            num_words = self._ram_size // 4
-            num_bytes = self._jlink.memory_read32(self._ram_start, num_words)
-            # Convert list of 32-bit integers to string for searching
-            mem_str = ''.join(
-                n.to_bytes(4, 'little', signed=False).decode('latin-1')
-                for n in num_bytes
-            )
-            offset = mem_str.find("SEGGER RTT")
-            if offset >= 0:
-                return self._ram_start + offset
+            CHUNK_WORDS = 1024  # Read 4KB at a time
+            total_words = self._ram_size // 4
+            search_sig = b"SEGGER RTT"
+
+            for offset_words in range(0, total_words, CHUNK_WORDS):
+                words_to_read = min(CHUNK_WORDS, total_words - offset_words)
+                addr = self._ram_start + offset_words * 4
+                raw = self._jlink.memory_read32(addr, words_to_read)
+
+                # Convert to bytes for searching (more efficient than string)
+                chunk = b''.join(
+                    n.to_bytes(4, 'little', signed=False) for n in raw
+                )
+                idx = chunk.find(search_sig)
+                if idx >= 0:
+                    return addr + idx
             return -1
         except Exception as e:
             print(f"[JLink] RTT address search error: {e}", file=sys.stderr, flush=True)
@@ -283,11 +292,19 @@ class JLinkRTT:
                         data_str = str(data_bytes)
 
                     if data_str:
-                        # Write to log file (for terminal viewing)
+                        # Write to log file (for terminal viewing), with size limit
                         if self._log_file:
                             try:
                                 self._log_file.write(data_str)
-                                self._log_file.flush()
+                                self._log_size += len(data_str.encode('utf-8'))
+                                # Rotate log file when it exceeds max size
+                                if self._log_size >= self.LOG_MAX_SIZE:
+                                    self._log_file.close()
+                                    self._log_file = open(self.RTT_LOG_FILE, 'w', encoding='utf-8')
+                                    self._log_size = 0
+                                    self._log_file.write("[RTT Log rotated]\n")
+                                else:
+                                    self._log_file.flush()
                             except Exception:
                                 pass
                         # Also print to stderr (for MCP Inspector notifications)
@@ -303,17 +320,25 @@ class JLinkRTT:
             time.sleep(self._poll_interval)
 
     def read(self, channel: int = 0, max_bytes: int = 512) -> str:
-        """Read all accumulated data from the ring buffer.
+        """Read and consume accumulated data from the ring buffer.
+
+        Returns all data and clears the buffer (read-once semantics),
+        so repeated calls don't return duplicate data.
 
         Args:
             channel: RTT channel to read from (unused, for API compatibility).
-            max_bytes: Maximum bytes to return (unused, for API compatibility).
+            max_bytes: Maximum bytes to return.
 
         Returns:
-            All accumulated RTT data as a string.
+            Accumulated RTT data as a string.
         """
         with self._lock:
-            return ''.join(self._ring_buffer)
+            data = ''.join(self._ring_buffer)
+            self._ring_buffer.clear()
+            # Truncate if needed
+            if len(data) > max_bytes:
+                data = data[-max_bytes:]
+            return data
 
     def write(self, channel: int, data: str) -> int:
         """Write data to RTT down-buffer (host -> device).

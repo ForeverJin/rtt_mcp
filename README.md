@@ -50,12 +50,12 @@ npx @modelcontextprotocol/inspector python -m mcp_rtt_server.server
 
 ```powershell
 # PowerShell
-Get-Content D:\huqiyang\library\osalpt\hc32l19x\mcp-rtt-server\rtt_output.log -Wait
+Get-Content .\rtt_output.log -Wait
 ```
 
 ```bash
 # Git Bash / WSL
-tail -f /d/huqiyang/library/osalpt/hc32l19x/mcp-rtt-server/rtt_output.log
+tail -f ./rtt_output.log
 ```
 
 ### Step 3: 使用工具
@@ -76,13 +76,15 @@ tail -f /d/huqiyang/library/osalpt/hc32l19x/mcp-rtt-server/rtt_output.log
 {
   "mcpServers": {
     "rtt": {
-      "command": "C:\\Python313\\python.exe",
+      "command": "python",
       "args": ["-m", "mcp_rtt_server.server"],
-      "cwd": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server"
+      "cwd": "."
     }
   }
 }
 ```
+
+> **注意**：将 `python` 替换为你的 Python 解释器实际路径（如 `C:\Python313\python.exe`）。
 
 重启 Claude Code 会话后，可直接用自然语言与设备交互，例如：
 - "连接 RTT 读取设备数据"
@@ -96,13 +98,15 @@ tail -f /d/huqiyang/library/osalpt/hc32l19x/mcp-rtt-server/rtt_output.log
 {
   "mcpServers": {
     "rtt": {
-      "command": "C:\\Python313\\python.exe",
+      "command": "python",
       "args": ["-m", "mcp_rtt_server.server"],
-      "cwd": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server"
+      "cwd": "."
     }
   }
 }
 ```
+
+> **注意**：`cwd` 需要改为本项目的实际绝对路径，因为 Claude Desktop 不会自动定位到项目目录。
 
 ## Available Tools
 

@@ -29,43 +29,79 @@ pip install -e .
 
 ## Usage
 
-### Command Line
-
-Run the MCP server directly:
+### Step 1: 安装
 
 ```bash
-python -m mcp_rtt_server.server
+cd mcp-rtt-server
+pip install -e .
 ```
 
-Or with environment variables:
+### Step 2: 启动 MCP Inspector（调试/测试用）
+
+**终端 A — 启动 MCP 服务器：**
 
 ```bash
-JLINK_DEVICE=HC32L19x JLINK_SPEED=4000 python -m mcp_rtt_server.server
+npx @modelcontextprotocol/inspector python -m mcp_rtt_server.server
 ```
 
-### Claude Desktop Integration
+启动后会输出一个本地网址（如 `http://localhost:6274/?...`），在浏览器打开。
 
-Add to your `claude_desktop_config.json`:
+**终端 B — 实时查看 RTT 数据：**
+
+```powershell
+# PowerShell
+Get-Content D:\huqiyang\library\osalpt\hc32l19x\mcp-rtt-server\rtt_output.log -Wait
+```
+
+```bash
+# Git Bash / WSL
+tail -f /d/huqiyang/library/osalpt/hc32l19x/mcp-rtt-server/rtt_output.log
+```
+
+### Step 3: 使用工具
+
+在浏览器 Inspector 中按顺序调用：
+
+1. **`jlink_connect`** — 连接 J-Link 和目标设备，启动 RTT 监控
+2. **`rtt_read`** — 读取设备发送的 RTT 数据
+3. **`rtt_write`** — 向设备发送数据（需固件支持接收）
+4. **`jlink_status`** — 查看连接状态和缓冲区信息
+5. **`jlink_disconnect`** — 断开连接
+
+### Claude Code 集成
+
+在项目 `.claude/settings.json` 中添加：
 
 ```json
 {
   "mcpServers": {
     "rtt": {
-      "command": "python",
+      "command": "C:\\Python313\\python.exe",
       "args": ["-m", "mcp_rtt_server.server"],
-      "env": {
-        "JLINK_DEVICE": "HC32L19x",
-        "JLINK_SPEED": "4000"
-      }
+      "cwd": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server"
     }
   }
 }
 ```
 
-### MCP Inspector (for testing)
+重启 Claude Code 会话后，可直接用自然语言与设备交互，例如：
+- "连接 RTT 读取设备数据"
+- "查看设备状态"
 
-```bash
-npx @modelcontextprotocol/inspector python -m mcp_rtt_server.server
+### Claude Desktop 集成
+
+编辑 `%APPDATA%\Claude\claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "rtt": {
+      "command": "C:\\Python313\\python.exe",
+      "args": ["-m", "mcp_rtt_server.server"],
+      "cwd": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server"
+    }
+  }
+}
 ```
 
 ## Available Tools

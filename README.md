@@ -84,7 +84,7 @@ tail -f ./rtt_output.log
 }
 ```
 
-> **注意**：将 `python` 替换为你的 Python 解释器实际路径（如 `C:\Python313\python.exe`）。
+> **注意**：如果 `python` 不在 PATH 中，需替换为完整路径（如 `C:\Python313\python.exe` 或 `/usr/bin/python3`）。
 
 重启 Claude Code 会话后，可直接用自然语言与设备交互，例如：
 - "连接 RTT 读取设备数据"

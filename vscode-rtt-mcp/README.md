@@ -49,18 +49,20 @@ Open Settings (Ctrl+,) and search "RTT MCP", or add to `.vscode/settings.json`:
 
 ```json
 {
-  "rtt-mcp.pythonPath": "C:\\Python313\\python.exe",
-  "rtt-mcp.serverCwd": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server",
+  "rtt-mcp.pythonPath": "python",
+  "rtt-mcp.serverCwd": "",
   "rtt-mcp.serverArgs": ["-m", "mcp_rtt_server.server"],
   "rtt-mcp.pollIntervalMs": 300,
   "rtt-mcp.autoConnect": false
 }
 ```
 
+> **注意**：`pythonPath` 默认使用 PATH 中的 `python`，如果不在 PATH 中需改为完整路径。`serverCwd` 留空表示自动定位，如需指定可填 `mcp-rtt-server` 的绝对路径。
+
 | Key | Default | Description |
 |-----|---------|-------------|
-| `rtt-mcp.pythonPath` | `C:\Python313\python.exe` | Python interpreter |
-| `rtt-mcp.serverCwd` | `D:\...\mcp-rtt-server` | MCP server working dir |
+| `rtt-mcp.pythonPath` | `python` | Python interpreter (on PATH or full path) |
+| `rtt-mcp.serverCwd` | (empty) | MCP server working dir (auto-detect if empty) |
 | `rtt-mcp.serverArgs` | `["-m", "mcp_rtt_server.server"]` | Server CLI args |
 | `rtt-mcp.pollIntervalMs` | `300` | Monitor poll interval (ms) |
 | `rtt-mcp.autoConnect` | `false` | Connect on activation |
@@ -121,7 +123,7 @@ npm test          # builds TS, then runs 10 tests in ~3s
 Override the Python path if needed:
 ```bash
 MCP_PYTHON=python npm test      # macOS / Linux
-$env:MCP_PYTHON = "D:\path\to\python.exe"; npm test   # PowerShell
+$env:MCP_PYTHON = "python"; npm test   # PowerShell
 ```
 
 What gets tested:
@@ -145,7 +147,7 @@ In VSCode:
 To point the extension at the mock server, add to `.vscode/launch.json` or use Settings UI:
 ```json
 {
-  "rtt-mcp.serverCwd": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\vscode-rtt-mcp\\test"
+  "rtt-mcp.serverCwd": "${workspaceFolder}/vscode-rtt-mcp/test"
 }
 ```
 

@@ -8,6 +8,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 import pylink
@@ -67,6 +68,37 @@ class JLinkRTT:
         self._lock = threading.Lock()
         self._log_file = None
         self._log_size = 0  # Track log file size for rotation
+        self._line_buf = ""  # Partial line buffer for line-aligned timestamping
+        self._max_line_buf = 4096  # Max partial line buffer size (bytes)
+
+    @staticmethod
+    def _ts() -> str:
+        """Return current time as [HH:MM:SS.mmm]."""
+        now = datetime.now()
+        return f"[{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}]"
+
+    def _flush_line(self, line: str) -> None:
+        """Write a complete timestamped line to log, stderr, and ring buffer."""
+        if not line:
+            return
+        stamped = f"{self._ts()} {line}\n"
+        encoded = stamped.encode('utf-8')
+        if self._log_file:
+            try:
+                self._log_file.write(stamped)
+                self._log_size += len(encoded)
+                if self._log_size >= self.LOG_MAX_SIZE:
+                    self._log_file.close()
+                    self._log_file = open(self.RTT_LOG_FILE, 'w', encoding='utf-8')
+                    self._log_size = 0
+                    self._log_file.write("[RTT Log rotated]\n")
+                else:
+                    self._log_file.flush()
+            except Exception:
+                pass
+        print(stamped, end='', file=sys.stderr, flush=True)
+        with self._lock:
+            self._ring_buffer.append(stamped)
 
     def _connect_jlink(self) -> str:
         """Connect to J-Link hardware.
@@ -153,12 +185,25 @@ class JLinkRTT:
             print(f"[JLink] RTT address search error: {e}", file=sys.stderr, flush=True)
             return -1
 
-    def connect(self) -> tuple[bool, str]:
+    def connect(self, serial: Optional[str] = None,
+                device: Optional[str] = None,
+                speed: Optional[int] = None) -> tuple[bool, str]:
         """Connect to J-Link and start RTT monitoring.
+
+        Args:
+            serial: Override J-Link serial number.
+            device: Override target device name.
+            speed: Override SWD speed in kHz.
 
         Returns:
             (success, error_message) tuple.
         """
+        if serial is not None:
+            self._serial = serial
+        if device is not None:
+            self._device = device
+        if speed is not None:
+            self._speed = speed
         err = self._connect_jlink()
         if err:
             return False, err
@@ -215,16 +260,18 @@ class JLinkRTT:
         except Exception as e:
             print(f"[JLink] Buffer query error: {e}", file=sys.stderr, flush=True)
 
-        # Test read
+        # Test read (route through line buffer for consistent timestamping)
         try:
             test_data = self._jlink.rtt_read(self._channel, 512)
             print(f"[JLink] Test read: {len(test_data)} bytes", file=sys.stderr, flush=True)
             if test_data:
                 decoded = bytes(test_data).decode('utf-8', errors='replace')
                 print(f"[JLink] Data preview: {repr(decoded[:100])}", file=sys.stderr, flush=True)
-                # Store initial data in ring buffer
-                with self._lock:
-                    self._ring_buffer.append(decoded)
+                # Route through line buffer so initial data gets timestamps
+                self._line_buf += decoded
+                while '\n' in self._line_buf:
+                    line, self._line_buf = self._line_buf.split('\n', 1)
+                    self._flush_line(line)
         except Exception as e:
             print(f"[JLink] Test read error: {e}", file=sys.stderr, flush=True)
 
@@ -252,6 +299,11 @@ class JLinkRTT:
         if self._monitor_thread:
             self._monitor_thread.join(timeout=1.0)
             self._monitor_thread = None
+
+        # Flush any remaining partial line
+        if self._line_buf:
+            self._flush_line(self._line_buf)
+            self._line_buf = ""
 
         # Close log file
         if self._log_file:
@@ -292,26 +344,14 @@ class JLinkRTT:
                         data_str = str(data_bytes)
 
                     if data_str:
-                        # Write to log file (for terminal viewing), with size limit
-                        if self._log_file:
-                            try:
-                                self._log_file.write(data_str)
-                                self._log_size += len(data_str.encode('utf-8'))
-                                # Rotate log file when it exceeds max size
-                                if self._log_size >= self.LOG_MAX_SIZE:
-                                    self._log_file.close()
-                                    self._log_file = open(self.RTT_LOG_FILE, 'w', encoding='utf-8')
-                                    self._log_size = 0
-                                    self._log_file.write("[RTT Log rotated]\n")
-                                else:
-                                    self._log_file.flush()
-                            except Exception:
-                                pass
-                        # Also print to stderr (for MCP Inspector notifications)
-                        print(data_str, end='', file=sys.stderr, flush=True)
-                        # Store in ring buffer
-                        with self._lock:
-                            self._ring_buffer.append(data_str)
+                        # Line-buffer: accumulate partial lines, flush complete ones
+                        self._line_buf += data_str
+                        # Guard: drop stale partial line if buffer exceeds limit
+                        if len(self._line_buf) > self._max_line_buf:
+                            self._line_buf = self._line_buf[-self._max_line_buf // 2:]
+                        while '\n' in self._line_buf:
+                            line, self._line_buf = self._line_buf.split('\n', 1)
+                            self._flush_line(line)
             except Exception as e:
                 # Log error for debugging
                 print(f"[RTT Monitor] Error: {e}", file=sys.stderr, flush=True)

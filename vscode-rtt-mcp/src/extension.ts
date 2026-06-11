@@ -1,0 +1,308 @@
+/**
+ * VSCode extension entry point.
+ *
+ * Wires up commands, status bar, and output channel around RttProvider.
+ * The status bar item is the primary entry point - click it for a quick menu.
+ */
+
+import * as fs from 'fs';
+import * as vscode from 'vscode';
+import { RttProvider } from './rttProvider';
+
+const RTT_OUTPUT_NAME = 'RTT';
+
+/** Format current time as [HH:MM:SS.mmm] for log output. */
+function ts(): string {
+  const d = new Date();
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return `${h}:${m}:${s}.${ms}`;
+}
+
+let provider: RttProvider;
+let statusBar: vscode.StatusBarItem;
+let output: vscode.OutputChannel;
+let disposables: vscode.Disposable[] = [];
+
+export function activate(context: vscode.ExtensionContext): void {
+  const config = vscode.workspace.getConfiguration('rtt-mcp');
+  const pythonPath = config.get<string>('pythonPath', 'C:\\Python313\\python.exe');
+  const serverCwd = config.get<string>('serverCwd', 'D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server');
+  const serverArgs = config.get<string[]>('serverArgs', ['-m', 'mcp_rtt_server.server']);
+  const pollMs = config.get<number>('pollIntervalMs', 300);
+  const device = config.get<string>('device', 'HC32L19x');
+  const speed = config.get<number>('speed', 4000);
+
+  output = vscode.window.createOutputChannel(RTT_OUTPUT_NAME);
+  context.subscriptions.push(output);
+
+  provider = new RttProvider(pythonPath, serverArgs, serverCwd, pollMs, device, speed);
+
+  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBar.command = 'rtt-mcp.showMenu';
+  statusBar.text = '$(debug-disconnect) RTT';
+  statusBar.tooltip = 'RTT MCP - click to open menu';
+  statusBar.show();
+  context.subscriptions.push(statusBar);
+
+  disposables = [
+    register('rtt-mcp.showMenu', () => showMenu()),
+    register('rtt-mcp.connect', () => connectCmd()),
+    register('rtt-mcp.disconnect', () => disconnectCmd()),
+    register('rtt-mcp.read', () => readCmd()),
+    register('rtt-mcp.write', () => writeCmd()),
+    register('rtt-mcp.listDevices', () => listDevicesCmd()),
+    register('rtt-mcp.status', () => statusCmd()),
+    register('rtt-mcp.clear', () => clearCmd()),
+    register('rtt-mcp.toggleMonitor', () => toggleMonitorCmd()),
+    register('rtt-mcp.openOutput', () => output.show(true)),
+    register('rtt-mcp.openLog', () => openLogCmd()),
+    register('rtt-mcp.reset', () => resetCmd()),
+    register('rtt-mcp.setDevice', () => setDeviceCmd()),
+  ];
+  context.subscriptions.push(...disposables);
+
+  const configSub = vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration('rtt-mcp')) {
+      const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+      const newPoll = cfg.get<number>('pollIntervalMs', 300);
+      const newDevice = cfg.get<string>('device', 'HC32L19x');
+      const newSpeed = cfg.get<number>('speed', 4000);
+      void provider.shutdown();
+      provider = new RttProvider(pythonPath, serverArgs, serverCwd, newPoll, newDevice, newSpeed);
+      updateStatusBar();
+    }
+  });
+  context.subscriptions.push(configSub);
+
+  if (config.get<boolean>('autoConnect', false)) {
+    void connectCmd();
+  } else {
+    updateStatusBar();
+  }
+}
+
+export function deactivate(): void {
+  void provider?.shutdown();
+  for (const d of disposables) d.dispose();
+}
+
+function register(cmd: string, fn: (...args: any[]) => any): vscode.Disposable {
+  return vscode.commands.registerCommand(cmd, fn);
+}
+
+async function showMenu(): Promise<void> {
+  const items: (vscode.QuickPickItem & { cmd?: string })[] = [
+    { label: '$(plug) Connect to J-Link', description: 'Open J-Link and start RTT', cmd: 'rtt-mcp.connect' },
+    { label: '$(debug-disconnect) Disconnect', description: 'Close J-Link', cmd: 'rtt-mcp.disconnect' },
+    { label: '$(arrow-down) Read Accumulated Data', description: 'Pull current RTT buffer', cmd: 'rtt-mcp.read' },
+    { label: '$(arrow-up) Write to Down-buffer', description: 'Send a string to the device', cmd: 'rtt-mcp.write' },
+    { label: '$(eye) Toggle Continuous Monitor', description: 'Stream RTT data to output channel', cmd: 'rtt-mcp.toggleMonitor' },
+    { label: '$(list-unordered) List J-Link Devices', cmd: 'rtt-mcp.listDevices' },
+    { label: '$(info) Show Status', cmd: 'rtt-mcp.status' },
+    { label: '$(trash) Clear Ring Buffer', cmd: 'rtt-mcp.clear' },
+    { label: '$(output) Show RTT Output', cmd: 'rtt-mcp.openOutput' },
+    { label: '$(file-text) Open RTT Log File', cmd: 'rtt-mcp.openLog' },
+    { label: '$(refresh) Reset Extension', description: 'Recreate status bar + provider (recovery)', cmd: 'rtt-mcp.reset' },
+    { label: '$(chip) Set Target Device', description: `Current: ${provider.deviceName}`, cmd: 'rtt-mcp.setDevice' },
+  ];
+  const pick = await vscode.window.showQuickPick(items, { title: 'RTT MCP' });
+  if (pick?.cmd) {
+    await vscode.commands.executeCommand(pick.cmd);
+  }
+}
+
+async function connectCmd(): Promise<void> {
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'RTT', cancellable: false },
+    async (progress) => {
+      progress.report({ message: 'Connecting to J-Link...' });
+      try {
+        const result = await provider.connect();
+        const text = (result.content ?? [])
+          .filter((c) => c.type === 'text')
+          .map((c) => c.text)
+          .join('\n');
+        output.appendLine(`[${ts()}] [RTT] ${text}`);
+        vscode.window.showInformationMessage(text || 'RTT connected');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        output.appendLine(`[${ts()}] [RTT ERROR] ${msg}`);
+        vscode.window.showErrorMessage(`RTT connect failed: ${msg}`);
+      }
+    },
+  );
+  updateStatusBar();
+}
+
+async function disconnectCmd(): Promise<void> {
+  await provider.disconnect();
+  output.appendLine(`[${ts()}] [RTT] Disconnected`);
+  vscode.window.showInformationMessage('RTT disconnected');
+  updateStatusBar();
+}
+
+async function readCmd(): Promise<void> {
+  if (!provider.isConnected) {
+    vscode.window.showWarningMessage('RTT not connected. Run "RTT: Connect to J-Link" first.');
+    return;
+  }
+  try {
+    const text = await provider.read();
+    output.append(text);
+    output.show(true);
+  } catch (e) {
+    vscode.window.showErrorMessage(`RTT read failed: ${(e as Error).message}`);
+  }
+}
+
+async function writeCmd(): Promise<void> {
+  if (!provider.isConnected) {
+    vscode.window.showWarningMessage('RTT not connected. Run "RTT: Connect to J-Link" first.');
+    return;
+  }
+  const data = await vscode.window.showInputBox({
+    prompt: 'String to send to RTT down-buffer (use \\r\\n for line endings)',
+    placeHolder: 'e.g. status\\r\\n',
+  });
+  if (!data) return;
+  try {
+    const result = await provider.write(data);
+    vscode.window.showInformationMessage(result);
+    output.appendLine(`[${ts()}] [RTT TX] ${data}`);
+  } catch (e) {
+    vscode.window.showErrorMessage(`RTT write failed: ${(e as Error).message}`);
+  }
+}
+
+async function listDevicesCmd(): Promise<void> {
+  if (!provider.isConnected) {
+    const choice = await vscode.window.showInformationMessage(
+      'Not connected. Connect first?',
+      'Connect', 'Cancel',
+    );
+    if (choice !== 'Connect') return;
+    await connectCmd();
+    if (!provider.isConnected) return;
+  }
+  try {
+    const text = await provider.listDevices();
+    output.appendLine(`[${ts()}] [RTT] ${text}`);
+    output.show(true);
+  } catch (e) {
+    vscode.window.showErrorMessage(`RTT list devices failed: ${(e as Error).message}`);
+  }
+}
+
+async function statusCmd(): Promise<void> {
+  if (!provider.isConnected) {
+    vscode.window.showInformationMessage('RTT not connected');
+    return;
+  }
+  try {
+    const text = await provider.status();
+    output.appendLine(`[${ts()}] [RTT Status]\n${text}`);
+    output.show(true);
+  } catch (e) {
+    vscode.window.showErrorMessage(`RTT status failed: ${(e as Error).message}`);
+  }
+}
+
+async function clearCmd(): Promise<void> {
+  if (!provider.isConnected) {
+    vscode.window.showWarningMessage('RTT not connected.');
+    return;
+  }
+  await provider.clear();
+  output.appendLine(`[${ts()}] [RTT] Buffer cleared`);
+}
+
+async function toggleMonitorCmd(): Promise<void> {
+  if (provider.isMonitoring) {
+    provider.stopMonitor();
+    output.appendLine(`[${ts()}] [RTT] Monitor stopped`);
+    vscode.window.showInformationMessage('RTT monitor stopped');
+  } else {
+    if (!provider.isConnected) {
+      vscode.window.showWarningMessage('RTT not connected. Run "RTT: Connect to J-Link" first.');
+      return;
+    }
+    provider.startMonitor({
+      onData: (text) => output.append(text + '\n'),
+      onError: (err) => output.appendLine(`[${ts()}] [RTT Monitor Error] ${err.message}`),
+    });
+    output.appendLine(`[${ts()}] [RTT] Monitor started`);
+    output.show(true);
+    vscode.window.showInformationMessage('RTT monitor started - output streaming to "RTT" channel');
+  }
+  updateStatusBar();
+}
+
+async function openLogCmd(): Promise<void> {
+  const logPath = provider.logFilePath;
+  if (!fs.existsSync(logPath)) {
+    vscode.window.showWarningMessage(`RTT log file not found: ${logPath}`);
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(logPath);
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function resetCmd(): Promise<void> {
+  await provider.shutdown();
+  statusBar.dispose();
+  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBar.command = 'rtt-mcp.showMenu';
+  statusBar.show();
+  const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+  provider = new RttProvider(
+    cfg.get<string>('pythonPath', 'C:\\Python313\\python.exe'),
+    cfg.get<string[]>('serverArgs', ['-m', 'mcp_rtt_server.server']),
+    cfg.get<string>('serverCwd', 'D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server'),
+    cfg.get<number>('pollIntervalMs', 300),
+    cfg.get<string>('device', 'HC32L19x'),
+    cfg.get<number>('speed', 4000),
+  );
+  updateStatusBar();
+  output.appendLine(`[${ts()}] [RTT] Extension reset`);
+  vscode.window.showInformationMessage('RTT extension reset');
+}
+
+async function setDeviceCmd(): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+  const current = cfg.get<string>('device', 'HC32L19x');
+  const pick = await vscode.window.showQuickPick(
+    [
+      { label: 'HC32L19x', description: 'HDSC HC32L19x (华大半导体)' },
+      { label: 'Cortex-M0+', description: 'Generic ARM Cortex-M0+' },
+      { label: 'STM32F103', description: 'ST STM32F103' },
+      { label: 'STM32F407', description: 'ST STM32F407' },
+      { label: 'GD32F103', description: 'GigaDevice GD32F103' },
+    ],
+    {
+      title: 'Select Target Device',
+      placeHolder: `Current: ${current}`,
+    },
+  );
+  if (!pick) return;
+  await cfg.update('device', pick.label, vscode.ConfigurationTarget.Workspace);
+  vscode.window.showInformationMessage(`RTT target device set to '${pick.label}'. Reconnect to apply.`);
+  output.appendLine(`[${ts()}] [RTT] Target device changed: ${current} → ${pick.label}`);
+}
+
+function updateStatusBar(): void {
+  if (!statusBar) return;
+  statusBar.backgroundColor = undefined;
+  if (!provider.isConnected) {
+    statusBar.text = '$(debug-disconnect) RTT';
+    statusBar.tooltip = 'RTT MCP - Disconnected (click to open menu)';
+  } else if (provider.isMonitoring) {
+    statusBar.text = '$(eye) RTT ●';
+    statusBar.tooltip = 'RTT MCP - Connected & monitoring (click to open menu)';
+  } else {
+    statusBar.text = '$(debug-start) RTT';
+    statusBar.tooltip = 'RTT MCP - Connected (click to open menu)';
+  }
+}

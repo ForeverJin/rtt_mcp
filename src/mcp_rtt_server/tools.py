@@ -134,7 +134,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if rtt.is_connected():
             rtt.disconnect()
 
-        success, err_msg = rtt.connect()
+        success, err_msg = rtt.connect(serial=serial, device=device, speed=speed)
         if success:
             status = rtt.status()
             return [TextContent(

@@ -1,0 +1,166 @@
+{
+  "name": "vscode-rtt-mcp",
+  "displayName": "RTT MCP Quick Access",
+  "description": "Quick access to mcp-rtt-server (J-Link RTT) tools via status bar and command palette",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "keywords": [
+    "rtt",
+    "jlink",
+    "mcp",
+    "embedded",
+    "hc32l19x"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "rtt-mcp.showMenu",
+        "title": "RTT: Show Quick Menu",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.connect",
+        "title": "RTT: Connect to J-Link",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.disconnect",
+        "title": "RTT: Disconnect from J-Link",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.read",
+        "title": "RTT: Read Accumulated Data",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.write",
+        "title": "RTT: Write to Down-buffer",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.listDevices",
+        "title": "RTT: List J-Link Devices",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.status",
+        "title": "RTT: Show Connection Status",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.clear",
+        "title": "RTT: Clear Ring Buffer",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.toggleMonitor",
+        "title": "RTT: Toggle Continuous Monitor",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.openOutput",
+        "title": "RTT: Show Output Channel",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.openLog",
+        "title": "RTT: Open RTT Log File",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.reset",
+        "title": "RTT: Reset Status Bar",
+        "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.setDevice",
+        "title": "RTT: Set Target Device",
+        "category": "RTT"
+      }
+    ],
+    "configuration": {
+      "title": "RTT MCP",
+      "properties": {
+        "rtt-mcp.pythonPath": {
+          "type": "string",
+          "default": "C:\\Python313\\python.exe",
+          "description": "Python interpreter used to launch the MCP server"
+        },
+        "rtt-mcp.serverCwd": {
+          "type": "string",
+          "default": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server",
+          "description": "Working directory for the MCP server (must contain the mcp_rtt_server package)"
+        },
+        "rtt-mcp.serverArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "-m",
+            "mcp_rtt_server.server"
+          ],
+          "description": "Arguments passed to the Python interpreter"
+        },
+        "rtt-mcp.pollIntervalMs": {
+          "type": "number",
+          "default": 300,
+          "minimum": 50,
+          "description": "Continuous monitor poll interval in milliseconds"
+        },
+        "rtt-mcp.autoConnect": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically connect to J-Link when the extension activates"
+        },
+        "rtt-mcp.device": {
+          "type": "string",
+          "default": "HC32L19x",
+          "description": "Target MCU device name passed to J-Link (e.g. HC32L19x, STM32F103, Cortex-M0+)",
+          "enum": [
+            "HC32L19x",
+            "Cortex-M0+",
+            "STM32F103",
+            "STM32F407",
+            "GD32F103"
+          ],
+          "enumDescriptions": [
+            "HDSC HC32L19x (华大半导体)",
+            "Generic ARM Cortex-M0+",
+            "ST STM32F103",
+            "ST STM32F407",
+            "GigaDevice GD32F103"
+          ]
+        },
+        "rtt-mcp.speed": {
+          "type": "integer",
+          "default": 4000,
+          "minimum": 100,
+          "description": "JTAG/SWD speed in kHz"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run build && node --test test/integration.test.js",
+    "mock": "C:\\Python313\\python.exe test/mock_server.py",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

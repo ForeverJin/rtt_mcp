@@ -22,3 +22,10 @@ rtt_output.log
 
 # Environment
 .env
+
+# Node.js (vscode-rtt-mcp)
+node_modules/
+*.vsix
+
+# Build output (vscode-rtt-mcp)
+vscode-rtt-mcp/dist/

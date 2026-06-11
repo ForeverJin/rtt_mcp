@@ -95,13 +95,13 @@
       "properties": {
         "rtt-mcp.pythonPath": {
           "type": "string",
-          "default": "C:\\Python313\\python.exe",
-          "description": "Python interpreter used to launch the MCP server"
+          "default": "python",
+          "description": "Python interpreter used to launch the MCP server (must be on PATH or set to full path)"
         },
         "rtt-mcp.serverCwd": {
           "type": "string",
-          "default": "D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server",
-          "description": "Working directory for the MCP server (must contain the mcp_rtt_server package)"
+          "default": "",
+          "description": "Working directory for the MCP server (must contain the mcp_rtt_server package). Leave empty to use the bundled server."
         },
         "rtt-mcp.serverArgs": {
           "type": "array",
@@ -155,7 +155,7 @@
     "build": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "npm run build && node --test test/integration.test.js",
-    "mock": "C:\\Python313\\python.exe test/mock_server.py",
+    "mock": "python test/mock_server.py",
     "package": "vsce package"
   },
   "devDependencies": {

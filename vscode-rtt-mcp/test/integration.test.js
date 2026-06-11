@@ -6,7 +6,7 @@
  * hardware or pylink dependency required.
  *
  * Run:   npm test
- * Env:   MCP_PYTHON=<path>     override Python interpreter (default: C:\Python313\python.exe)
+ * Env:   MCP_PYTHON=<path>     override Python interpreter (default: python)
  */
 
 const { test, after } = require('node:test');
@@ -15,7 +15,7 @@ const path = require('node:path');
 const { McpClient } = require('../dist/mcpClient.js');
 const { RttProvider } = require('../dist/rttProvider.js');
 
-const PYTHON = process.env.MCP_PYTHON || 'C:\\Python313\\python.exe';
+const PYTHON = process.env.MCP_PYTHON || 'python';
 const MOCK_SCRIPT = path.join(__dirname, 'mock_server.py');
 const TEST_CWD = __dirname;
 

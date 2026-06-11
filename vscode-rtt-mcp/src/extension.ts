@@ -28,8 +28,8 @@ let disposables: vscode.Disposable[] = [];
 
 export function activate(context: vscode.ExtensionContext): void {
   const config = vscode.workspace.getConfiguration('rtt-mcp');
-  const pythonPath = config.get<string>('pythonPath', 'C:\\Python313\\python.exe');
-  const serverCwd = config.get<string>('serverCwd', 'D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server');
+  const pythonPath = config.get<string>('pythonPath', 'python');
+  const serverCwd = config.get<string>('serverCwd', '');
   const serverArgs = config.get<string[]>('serverArgs', ['-m', 'mcp_rtt_server.server']);
   const pollMs = config.get<number>('pollIntervalMs', 300);
   const device = config.get<string>('device', 'HC32L19x');
@@ -115,18 +115,31 @@ async function showMenu(): Promise<void> {
 }
 
 async function connectCmd(): Promise<void> {
+  output.show(true);
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'RTT', cancellable: false },
     async (progress) => {
       progress.report({ message: 'Connecting to J-Link...' });
       try {
-        const result = await provider.connect();
+        const result = await provider.connect({
+          onStatus: (msg) => {
+            output.appendLine(`[${ts()}] [RTT] ${msg}`);
+            progress.report({ message: msg });
+          },
+        });
         const text = (result.content ?? [])
           .filter((c) => c.type === 'text')
           .map((c) => c.text)
           .join('\n');
         output.appendLine(`[${ts()}] [RTT] ${text}`);
-        vscode.window.showInformationMessage(text || 'RTT connected');
+
+        // Auto-start monitor after successful connect
+        provider.startMonitor({
+          onData: (data) => output.append(data + '\n'),
+          onError: (err) => output.appendLine(`[${ts()}] [RTT Monitor Error] ${err.message}`),
+        });
+        output.appendLine(`[${ts()}] [RTT] Monitor started`);
+        vscode.window.showInformationMessage(text || 'RTT connected & monitoring');
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         output.appendLine(`[${ts()}] [RTT ERROR] ${msg}`);
@@ -258,9 +271,9 @@ async function resetCmd(): Promise<void> {
   statusBar.show();
   const cfg = vscode.workspace.getConfiguration('rtt-mcp');
   provider = new RttProvider(
-    cfg.get<string>('pythonPath', 'C:\\Python313\\python.exe'),
+    cfg.get<string>('pythonPath', 'python'),
     cfg.get<string[]>('serverArgs', ['-m', 'mcp_rtt_server.server']),
-    cfg.get<string>('serverCwd', 'D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server'),
+    cfg.get<string>('serverCwd', ''),
     cfg.get<number>('pollIntervalMs', 300),
     cfg.get<string>('device', 'HC32L19x'),
     cfg.get<number>('speed', 4000),

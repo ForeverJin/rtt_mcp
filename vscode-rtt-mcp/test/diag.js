@@ -5,15 +5,15 @@
  * stderr/stdout in real time. Run from the project root:
  *
  *   node test/diag.js
- *   node test/diag.js "D:\path\to\python.exe"
- *   node test/diag.js "D:\path\to\python.exe" "D:\other\cwd"
+ *   node test/diag.js "/path/to/python"
+ *   node test/diag.js "/path/to/python" "/path/to/cwd"
  */
 
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 
-const python = process.argv[2] || 'C:\\Python313\\python.exe';
-const cwd = process.argv[3] || 'D:\\huqiyang\\library\\osalpt\\hc32l19x\\mcp-rtt-server';
+const python = process.argv[2] || 'python';
+const cwd = process.argv[3] || path.join(__dirname, '..', 'mcp-rtt-server');
 const args = ['-u', '-m', 'mcp_rtt_server.server'];
 
 console.log('=== diag.js ===');

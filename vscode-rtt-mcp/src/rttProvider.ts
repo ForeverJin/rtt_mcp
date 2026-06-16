@@ -26,6 +26,9 @@ export class RttProvider {
   private client: McpClient | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
   private _monitoring = false;
+  // Byte offset into the broadcast log for the next rtt_read_raw poll. Reset to 0
+  // when the log rotates (server reports next_offset <= this value).
+  private monitorOffset = 0;
 
   constructor(
     private readonly command: string,
@@ -86,6 +89,16 @@ export class RttProvider {
     return extractText(result);
   }
 
+  /**
+   * Read new bytes from the non-draining broadcast log starting at `offset`.
+   * Returns the raw server JSON ({"data","next_offset"}); the caller advances a
+   * cursor. Used by the continuous monitor so it coexists with rtt_read consumers.
+   */
+  async readLogRaw(offset: number, maxBytes = 8192): Promise<string> {
+    const result = await this.callTool('rtt_read_raw', { offset, max_bytes: maxBytes });
+    return extractText(result);
+  }
+
   async write(data: string, channel = 0): Promise<string> {
     const result = await this.callTool('rtt_write', { channel, data });
     return extractText(result);
@@ -109,6 +122,8 @@ export class RttProvider {
     this.stopMonitor();
     if (!this.isConnected) return;
     this._monitoring = true;
+    // Start from the current end of the broadcast log so we only stream NEW data.
+    this.monitorOffset = 0;
     this.monitorTimer = setInterval(() => {
       this.tickMonitor(events).catch((e) => {
         events.onError(e instanceof Error ? e : new Error(String(e)));
@@ -135,11 +150,29 @@ export class RttProvider {
 
   private async tickMonitor(events: RttProviderEvents): Promise<void> {
     if (!this.isConnected) return;
-    const text = await this.read(4096);
-    if (!text) return;
-    if (text.includes('(no RTT data)')) return;
-    const cleaned = stripDiagnostics(text);
-    if (cleaned) events.onData(cleaned);
+    // Poll the NON-draining broadcast log via rtt_read_raw, so the continuous
+    // monitor never steals bytes that an on-demand `rtt_read` (or another client)
+    // would otherwise see. The server tracks no per-client cursor, so we dedup by
+    // advancing monitorOffset through the returned next_offset.
+    const payload = await this.readLogRaw(this.monitorOffset, 8192);
+    if (!payload) return;
+    let nextOffset = this.monitorOffset;
+    let data = '';
+    try {
+      const parsed = JSON.parse(payload);
+      data = typeof parsed.data === 'string' ? parsed.data : '';
+      nextOffset = typeof parsed.next_offset === 'number' ? parsed.next_offset : this.monitorOffset;
+    } catch {
+      return;
+    }
+    // Rotation / no progress: server resets cursor to <= current; clamp so we never
+    // feed stale content on the next poll.
+    if (nextOffset <= this.monitorOffset) {
+      this.monitorOffset = 0;
+    } else {
+      this.monitorOffset = nextOffset;
+    }
+    if (data) events.onData(data);
   }
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<McpCallResult> {
@@ -153,14 +186,4 @@ function extractText(result: McpCallResult): string {
     .filter((c) => c.type === 'text')
     .map((c) => c.text);
   return parts.join('\n');
-}
-
-/**
- * The MCP server's `rtt_read` tool returns diagnostics + ring buffer data
- * prefixed with `[RTT Diagnostics]` / `[RTT Data]`. Extract just the data.
- */
-function stripDiagnostics(text: string): string {
-  const idx = text.indexOf('[RTT Data]');
-  if (idx < 0) return text.trim();
-  return text.slice(idx + '[RTT Data]'.length).trim();
 }

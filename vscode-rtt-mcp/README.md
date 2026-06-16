@@ -4,10 +4,13 @@ A VSCode extension that wraps [`mcp-rtt-server`](../mcp-rtt-server) so you can d
 
 ## Features
 
+- **Shared single-owner daemon** — the extension starts a long-lived SSE daemon (`mcp_rtt_server.http_server`) that is the **only** process to open the J-Link. Claude Code auto-detects and connects to the same daemon, so both clients share one probe with zero contention
 - **Status bar indicator** — `RTT` icon always visible, reflects connection + monitor state
 - **Quick menu** — click the status bar (or run `RTT: Show Quick Menu`) for a one-click list of all operations
 - **Output channel** — `RTT` channel streams data when monitor is on
-- **10 commands** — Connect, Disconnect, Read, Write, List Devices, Status, Clear, Toggle Monitor, Open Output, Open Log
+- **Non-draining monitor** — monitor mode polls the broadcast log (`rtt_read_raw`), so it never steals bytes from an on-demand read or from Claude Code
+- **Graceful teardown** — on disconnect/deactivate the extension `POST /shutdown`s the daemon (releasing the J-Link) before falling back to `kill()`, avoiding Windows `TerminateProcess` stranding the probe
+- **13 commands** — Connect, Disconnect, Read, Write, List Devices, Status, Clear, Toggle Monitor, Open Output, Open Log, Reset, Set Target Device, Show Quick Menu
 
 ## Requirements
 
@@ -51,9 +54,12 @@ Open Settings (Ctrl+,) and search "RTT MCP", or add to `.vscode/settings.json`:
 {
   "rtt-mcp.pythonPath": "python",
   "rtt-mcp.serverCwd": "",
-  "rtt-mcp.serverArgs": ["-m", "mcp_rtt_server.server"],
+  "rtt-mcp.serverArgs": ["-m", "mcp_rtt_server.bridge"],
+  "rtt-mcp.daemonUrl": "http://127.0.0.1:8765/sse",
   "rtt-mcp.pollIntervalMs": 300,
-  "rtt-mcp.autoConnect": false
+  "rtt-mcp.autoConnect": false,
+  "rtt-mcp.device": "HC32L19x",
+  "rtt-mcp.speed": 4000
 }
 ```
 
@@ -63,9 +69,12 @@ Open Settings (Ctrl+,) and search "RTT MCP", or add to `.vscode/settings.json`:
 |-----|---------|-------------|
 | `rtt-mcp.pythonPath` | `python` | Python interpreter (on PATH or full path) |
 | `rtt-mcp.serverCwd` | (empty) | MCP server working dir (auto-detect if empty) |
-| `rtt-mcp.serverArgs` | `["-m", "mcp_rtt_server.server"]` | Server CLI args |
+| `rtt-mcp.serverArgs` | `["-m", "mcp_rtt_server.bridge"]` | Client-side stdio process (the **bridge** forwards to the shared daemon) |
+| `rtt-mcp.daemonUrl` | `http://127.0.0.1:8765/sse` | Shared daemon SSE URL; extension starts it if not running |
 | `rtt-mcp.pollIntervalMs` | `300` | Monitor poll interval (ms) |
 | `rtt-mcp.autoConnect` | `false` | Connect on activation |
+| `rtt-mcp.device` | `HC32L19x` | Target MCU name (enum) |
+| `rtt-mcp.speed` | `4000` | SWD speed in kHz |
 
 ## Usage
 
@@ -91,20 +100,26 @@ VSCode Extension (TypeScript)
    │
    ├── status bar / commands / output channel (VSCode API)
    │
+   ├── ensures shared SSE daemon is up (spawns mcp_rtt_server.http_server
+   │   if 127.0.0.1:8765/sse is not answering)  ── the daemon is the SOLE
+   │   pylink / J-Link owner
+   │
    └── RttProvider
-         ├── spawns Python child process: mcp_rtt_server.server
-         ├── speaks MCP/JSON-RPC over stdio (Content-Length framed)
-         └── polls rtt_read at pollIntervalMs for monitor mode
+         ├── spawns the bridge: mcp_rtt_server.bridge (stdio↔SSE)
+         │     └── forwards every MCP call to the daemon over SSE
+         ├── speaks MCP/JSON-RPC over stdio (line-delimited JSON)
+         └── monitor mode polls rtt_read_raw (broadcast log, non-draining)
 ```
 
-The MCP client is implemented from scratch in `src/mcpClient.ts` (no external dependency on `@modelcontextprotocol/sdk`).
+The extension and Claude Code both connect to the **same** daemon as clients, so the single J-Link is never opened twice. `deactivate()` / teardown `POST /shutdown`s the daemon (releasing the J-Link) before falling back to `kill()` — Windows `TerminateProcess` would otherwise strand the probe. The MCP client is implemented from scratch in `src/mcpClient.ts` (no external dependency on `@modelcontextprotocol/sdk`).
 
 ## Troubleshooting
 
-- **"MCP request timed out"** — Python or `pylink-square` not installed in the configured `serverCwd`; verify `python -m mcp_rtt_server.server` works from a terminal first.
+- **"MCP request timed out"** — Python or `pylink-square` not installed in the configured `serverCwd`; verify `python -m mcp_rtt_server.bridge` (and `... http_server`) work from a terminal first.
 - **"RTT CB not found"** — target firmware didn't call `SEGGER_RTT_Init()`, or RTT buffers in `SEGGER_RTT_Conf.h` are too small.
-- **Status bar doesn't change** — the extension defers spawning the Python process until the first command; click `Connect` to start it.
-- **Multiple extensions competing** — only one process can hold the J-Link; if `.claude/settings.json` also runs the server, disconnect there first.
+- **Status bar doesn't change** — the extension defers spawning the daemon/bridge until the first `Connect`; click `Connect` to start it.
+- **J-Link stuck / "already connected" after a crash** — a previous process was hard-killed without releasing the probe. Restart VSCode (the extension `POST /shutdown`s the daemon on deactivate), or unplug/replug the J-Link.
+- **Monitor shows nothing while Claude reads data** — the monitor uses the non-draining broadcast log, so this should not happen; if it does, check the daemon is actually connected (`RTT: Show Connection Status`).
 
 ## Testing
 

@@ -13,7 +13,14 @@ authors = [
     { name = "Your Name" }
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    # Core MCP SDK. The SSE transport (http_server.py / bridge.py) imports uvicorn,
+    # starlette and httpx-sse; recent `mcp` releases pull these in transitively,
+    # but we declare them explicitly with minimums so the SSE server is installable
+    # and pinned even if mcp ever makes them optional extras.
+    "mcp>=1.2.0",
+    "uvicorn>=0.31.1; sys_platform != 'emscripten'",
+    "starlette>=0.37.0",
+    "httpx-sse>=0.4.0",
     "pylink-square>=0.14.0",
 ]
 

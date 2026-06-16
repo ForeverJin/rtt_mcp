@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 from mcp.types import Tool, TextContent
 
 from .jlink_rtt import get_instance
@@ -85,6 +88,30 @@ def get_tool_definitions() -> list[Tool]:
             },
         ),
         Tool(
+            name="rtt_read_raw",
+            description="Read new bytes from the broadcast log starting at a byte offset. "
+                        "Non-draining and multi-consumer safe: ideal for a continuous "
+                        "monitor that must coexist with other readers without stealing "
+                        "their data. Pass the returned next_offset as 'offset' on the "
+                        "next call; if the log rotated (next_offset > file size), pass "
+                        "offset=0. Returns JSON: {\"data\": \"...\", \"next_offset\": N}.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "offset": {
+                        "type": "integer",
+                        "description": "Byte offset to read from (default: 0).",
+                        "default": 0,
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "Maximum bytes to return (default: 8192).",
+                        "default": 8192,
+                    },
+                },
+            },
+        ),
+        Tool(
             name="rtt_write",
             description="Write data to RTT down-buffer (host -> device). "
                         "The target device must be running RTT with a down-buffer listener.",
@@ -135,6 +162,11 @@ def get_tool_definitions() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Call a tool by name with the given arguments.
 
+    The JLinkRTT layer wraps pylink, which performs blocking USB/DLL I/O. To keep
+    the SSE daemon's asyncio event loop responsive for all clients, every blocking
+    pylink call is offloaded to a worker thread via ``asyncio.to_thread``. The
+    stdio server (single client) is unaffected by this.
+
     Args:
         name: Tool name.
         arguments: Tool arguments.
@@ -160,7 +192,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                      f"RTT monitoring active on channel {status.channel} (shared connection)",
             )]
 
-        success, err_msg = rtt.connect(serial=serial, device=device, speed=speed)
+        success, err_msg = await asyncio.to_thread(
+            rtt.connect, serial=serial, device=device, speed=speed
+        )
         if success:
             status = rtt.status()
             return [TextContent(
@@ -179,7 +213,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not rtt.is_connected():
             return [TextContent(type="text", text="J-Link is not connected.")]
 
-        rtt.disconnect()
+        await asyncio.to_thread(rtt.disconnect)
         return [TextContent(type="text", text="J-Link disconnected successfully.")]
 
     elif name == "rtt_read":
@@ -192,47 +226,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         channel = arguments.get("channel", 0)
         max_bytes = arguments.get("max_bytes", 512)
 
-        # Try direct J-Link read (bypass ring buffer for debugging)
-        diag_parts = []
-        try:
-            jlink = rtt._jlink
-            if jlink:
-                # Get RTT buffer info
-                try:
-                    num_up = jlink.rtt_get_num_up_buffers()
-                    num_down = jlink.rtt_get_num_down_buffers()
-                    diag_parts.append(f"RTT buffers: {num_up} up, {num_down} down")
-                except Exception as e:
-                    diag_parts.append(f"RTT buffers error: {e}")
+        # NOTE: the monitor thread is the sole reader of the physical RTT up-buffer.
+        # rtt_read returns only what it accumulated in the ring buffer, so it never
+        # steals bytes from the monitor's log file / stderr / other consumers.
+        ring_data = await asyncio.to_thread(rtt.read, channel=channel, max_bytes=max_bytes)
+        return [TextContent(type="text", text=ring_data if ring_data else "(no RTT data)")]
 
-                # Get RTT status
-                try:
-                    rtt_status = jlink.rtt_get_status()
-                    diag_parts.append(f"RTT status: {rtt_status}")
-                except Exception as e:
-                    diag_parts.append(f"RTT status error: {e}")
+    elif name == "rtt_read_log":
+        max_bytes = arguments.get("max_bytes", 8192)
+        data = await asyncio.to_thread(rtt.read_log_tail, max_bytes)
+        return [TextContent(type="text", text=data if data else "(no RTT log yet — connect first)")]
 
-                # Direct read
-                try:
-                    raw = jlink.rtt_read(channel, max_bytes)
-                    diag_parts.append(f"Direct read: {len(raw)} bytes")
-                    if raw:
-                        decoded = bytes(raw).decode('utf-8', errors='replace')
-                        diag_parts.append(f"Data: {repr(decoded[:200])}")
-                except Exception as e:
-                    diag_parts.append(f"Direct read error: {e}")
-        except Exception as e:
-            diag_parts.append(f"J-Link access error: {e}")
-
-        # Also read from ring buffer
-        ring_data = rtt.read(channel=channel, max_bytes=max_bytes)
-        diag_parts.append(f"Ring buffer: {len(ring_data)} chars, {rtt.status().ring_buffer_size} entries")
-
-        return [TextContent(
-            type="text",
-            text="[RTT Diagnostics]\n" + "\n".join(diag_parts) +
-                 (f"\n\n[RTT Data]\n{ring_data}" if ring_data else "\n\n(no RTT data)"),
-        )]
+    elif name == "rtt_read_raw":
+        offset = arguments.get("offset", 0)
+        max_bytes = arguments.get("max_bytes", 8192)
+        data, next_offset = await asyncio.to_thread(rtt.read_log_raw, offset, max_bytes)
+        payload = json.dumps({"data": data, "next_offset": next_offset})
+        return [TextContent(type="text", text=payload)]
 
     elif name == "rtt_write":
         if not rtt.is_connected():
@@ -247,7 +257,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not data:
             return [TextContent(type="text", text="No data provided to write.")]
 
-        written = rtt.write(channel=channel, data=data)
+        written = await asyncio.to_thread(rtt.write, channel=channel, data=data)
         if written >= 0:
             return [TextContent(
                 type="text",
@@ -260,7 +270,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )]
 
     elif name == "rtt_list_devices":
-        devices = rtt.list_devices()
+        devices = await asyncio.to_thread(rtt.list_devices)
         if devices:
             return [TextContent(
                 type="text",
@@ -276,6 +286,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if not rtt.is_connected():
             return [TextContent(type="text", text="J-Link is not connected.")]
 
+        # status() only reads cached fields; no blocking pylink call.
         status = rtt.status()
         return [TextContent(
             type="text",
@@ -296,13 +307,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 text="J-Link is not connected. Call jlink_connect first.",
             )]
 
-        rtt.clear_buffer()
+        await asyncio.to_thread(rtt.clear_buffer)
         return [TextContent(type="text", text="RTT buffer cleared.")]
-
-    elif name == "rtt_read_log":
-        max_bytes = arguments.get("max_bytes", 8192)
-        data = rtt.read_log_tail(max_bytes)
-        return [TextContent(type="text", text=data if data else "(no RTT log yet — connect first)")]
 
     else:
         return [TextContent(

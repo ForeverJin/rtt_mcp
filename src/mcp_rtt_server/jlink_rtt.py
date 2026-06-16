@@ -118,6 +118,15 @@ class JLinkRTT:
             import traceback
             tb = traceback.format_exc()
             print(f"[JLink] Failed to open J-Link:\n{tb}", file=sys.stderr, flush=True)
+            # Release the partially-opened handle so a retry on the process-global
+            # singleton doesn't orphan it (and risk locking the probe until the
+            # process is killed). Mirrors the cleanup in connect()'s other paths.
+            if self._jlink:
+                try:
+                    self._jlink.close()
+                except Exception:
+                    pass
+                self._jlink = None
             return tb
 
     def _connect_device(self) -> bool:
@@ -400,6 +409,45 @@ class JLinkRTT:
             return ""
         except Exception as e:
             return f"(log read error: {e})\n"
+
+    def log_file_size(self) -> int:
+        """Return the current byte size of the RTT log file (0 if absent).
+
+        Used by continuous monitors (``read_log_raw``) to detect rotation: if the
+        file shrank below a previously returned offset, the log was rotated and the
+        cursor must reset to 0.
+        """
+        try:
+            return os.path.getsize(self.RTT_LOG_FILE)
+        except OSError:
+            return 0
+
+    def read_log_raw(self, offset: int = 0, max_bytes: int = 8192) -> tuple[str, int]:
+        """Read new bytes from the broadcast log starting at ``offset``.
+
+        Non-draining, multi-consumer safe: this never consumes data, so an
+        arbitrary number of monitors can poll independently. The caller tracks the
+        returned ``next_offset`` and passes it back as ``offset`` on the next poll.
+
+        If the log rotated since the last call (file smaller than ``offset``), the
+        read restarts from 0 and ``next_offset`` reflects only the fresh content.
+
+        Returns:
+            (data, next_offset) where next_offset is the cursor for the next call.
+        """
+        try:
+            size = os.path.getsize(self.RTT_LOG_FILE)
+            if offset > size:
+                # Log was rotated/truncated under us; restart from the beginning.
+                offset = 0
+            with open(self.RTT_LOG_FILE, "rb") as f:
+                f.seek(offset)
+                data = f.read(max_bytes)
+            return data.decode("utf-8", errors="replace"), offset + len(data)
+        except FileNotFoundError:
+            return "", 0
+        except Exception as e:
+            return f"(log read error: {e})\n", offset
 
     def write(self, channel: int, data: str) -> int:
         """Write data to RTT down-buffer (host -> device).

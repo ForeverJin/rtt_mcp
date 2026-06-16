@@ -92,7 +92,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   void provider?.shutdown();
-  stopDaemon();
+  // Best-effort graceful teardown; deactivate is synchronous, so we can't await.
+  void stopDaemon();
   for (const d of disposables) d.dispose();
 }
 
@@ -146,7 +147,30 @@ async function ensureDaemon(): Promise<boolean> {
   return false;
 }
 
-function stopDaemon(): void {
+async function stopDaemon(): Promise<void> {
+  if (!daemonProc) return;
+  // Ask the daemon to release the J-Link and exit cleanly. This is the supported
+  // teardown path: on Windows, child.kill() is TerminateProcess, a hard kill that
+  // bypasses Python cleanup and would strand the probe with RTT started. Try the
+  // graceful POST first (short timeout), then fall back to kill().
+  const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+  const sseUrl = cfg.get<string>('daemonUrl', DAEMON_URL_DEFAULT);
+  const base = sseUrl.replace(/\/sse\/?$/, '');
+  const headers: Record<string, string> = {};
+  const token = process.env.RTT_AUTH_TOKEN;
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 2000);
+    await fetch(`${base}/shutdown`, { method: 'POST', headers, signal: ctrl.signal });
+    clearTimeout(timer);
+  } catch {
+    /* daemon may already be down; fall through to kill */
+  }
+  // Give the graceful shutdown a moment to complete before forcing.
+  for (let i = 0; i < 10 && daemonProc; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   if (daemonProc) {
     try { daemonProc.kill(); } catch { /* ignore */ }
     daemonProc = null;

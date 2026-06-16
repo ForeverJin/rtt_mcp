@@ -380,6 +380,27 @@ class JLinkRTT:
                 data = data[-max_bytes:]
             return data
 
+    def read_log_tail(self, max_bytes: int = 8192) -> str:
+        """Return the tail of the complete RTT log file.
+
+        Unlike ``read()`` (which drains a single shared ring buffer), the log file
+        is an independent broadcast sink: nobody drains it, so every consumer sees
+        the full output. Use this when another client (e.g. the VSCode extension)
+        is actively streaming via the ring buffer.
+        """
+        try:
+            size = os.path.getsize(self.RTT_LOG_FILE)
+            with open(self.RTT_LOG_FILE, "rb") as f:
+                if size > max_bytes:
+                    f.seek(-max_bytes, os.SEEK_END)
+                    f.readline()  # discard a possibly partial first line
+                data = f.read()
+            return data.decode("utf-8", errors="replace")
+        except FileNotFoundError:
+            return ""
+        except Exception as e:
+            return f"(log read error: {e})\n"
+
     def write(self, channel: int, data: str) -> int:
         """Write data to RTT down-buffer (host -> device).
 

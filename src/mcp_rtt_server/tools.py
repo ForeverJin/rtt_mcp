@@ -67,6 +67,24 @@ def get_tool_definitions() -> list[Tool]:
             },
         ),
         Tool(
+            name="rtt_read_log",
+            description="Read the tail of the complete RTT log file. This is an "
+                        "independent broadcast sink (not drained by other clients), "
+                        "so it returns the full RTT output even while another client "
+                        "(e.g. the VSCode extension) is streaming via rtt_read. "
+                        "Prefer this over rtt_read when another consumer is active.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "Maximum bytes to return from the end of the log (default: 8192).",
+                        "default": 8192,
+                    },
+                },
+            },
+        ),
+        Tool(
             name="rtt_write",
             description="Write data to RTT down-buffer (host -> device). "
                         "The target device must be running RTT with a down-buffer listener.",
@@ -131,8 +149,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         device = arguments.get("device", "HC32L19x")
         speed = arguments.get("speed", 4000)
 
+        # Shared daemon: if a connection already exists (another client opened it),
+        # keep it. Force-reconnecting here would drop the J-Link for everyone.
         if rtt.is_connected():
-            rtt.disconnect()
+            status = rtt.status()
+            return [TextContent(
+                type="text",
+                text=f"Already connected to J-Link device '{status.device_name}' "
+                     f"(serial: {status.serial}, speed: {status.speed} kHz)\n"
+                     f"RTT monitoring active on channel {status.channel} (shared connection)",
+            )]
 
         success, err_msg = rtt.connect(serial=serial, device=device, speed=speed)
         if success:
@@ -272,6 +298,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         rtt.clear_buffer()
         return [TextContent(type="text", text="RTT buffer cleared.")]
+
+    elif name == "rtt_read_log":
+        max_bytes = arguments.get("max_bytes", 8192)
+        data = rtt.read_log_tail(max_bytes)
+        return [TextContent(type="text", text=data if data else "(no RTT log yet — connect first)")]
 
     else:
         return [TextContent(

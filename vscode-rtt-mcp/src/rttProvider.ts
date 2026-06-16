@@ -13,6 +13,8 @@ export interface RttConnectOptions {
   serial?: string;
   device?: string;
   speed?: number;
+  /** Optional progress callback invoked at key connect steps. */
+  onStatus?: (msg: string) => void;
 }
 
 export interface RttProviderEvents {
@@ -56,9 +58,11 @@ export class RttProvider {
 
   async connect(opts: RttConnectOptions = {}): Promise<McpCallResult> {
     await this.shutdown();
+    opts.onStatus?.('Starting MCP server...');
     const client = new McpClient(this.command, this.args, this.cwd);
     await client.start();
     this.client = client;
+    opts.onStatus?.(`Connecting to J-Link (${opts.device ?? this.device})...`);
     return await this.callTool('jlink_connect', {
       serial: opts.serial,
       device: opts.device ?? this.device,

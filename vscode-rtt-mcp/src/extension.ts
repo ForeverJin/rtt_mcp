@@ -5,6 +5,7 @@
  * The status bar item is the primary entry point - click it for a quick menu.
  */
 
+import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { RttProvider } from './rttProvider';
@@ -25,6 +26,11 @@ let provider: RttProvider;
 let statusBar: vscode.StatusBarItem;
 let output: vscode.OutputChannel;
 let disposables: vscode.Disposable[] = [];
+
+// Shared SSE daemon that owns the J-Link. The extension starts/stops it; both this
+// extension (via the bridge) and Claude Code connect to it as clients.
+let daemonProc: ChildProcess | null = null;
+const DAEMON_URL_DEFAULT = 'http://127.0.0.1:8765/sse';
 
 export function activate(context: vscode.ExtensionContext): void {
   const config = vscode.workspace.getConfiguration('rtt-mcp');
@@ -86,6 +92,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   void provider?.shutdown();
+  stopDaemon();
   for (const d of disposables) d.dispose();
 }
 
@@ -93,10 +100,63 @@ function register(cmd: string, fn: (...args: any[]) => any): vscode.Disposable {
   return vscode.commands.registerCommand(cmd, fn);
 }
 
+async function isDaemonUp(url: string): Promise<boolean> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2000);
+  try {
+    // A GET to the SSE endpoint resolves as soon as headers arrive (before the
+    // event stream), so this won't hang; the abort just frees the connection.
+    const res = await fetch(url, { signal: ctrl.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function ensureDaemon(): Promise<boolean> {
+  const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+  const url = cfg.get<string>('daemonUrl', DAEMON_URL_DEFAULT);
+  if (await isDaemonUp(url)) return true;
+  const pythonPath = cfg.get<string>('pythonPath', 'python');
+  const serverCwd = cfg.get<string>('serverCwd', '');
+  // The daemon reads these at first connect (module-global singleton). The RAM
+  // window must cover STM32F407 SRAM so the RTT control-block scan finds it.
+  const env = {
+    ...process.env,
+    JLINK_DEVICE: cfg.get<string>('device', 'HC32L19x'),
+    JLINK_SPEED: String(cfg.get<number>('speed', 4000)),
+    JLINK_RAM_START: '0x20000000',
+    JLINK_RAM_SIZE: '0x20000',
+    RTT_CHANNEL: '0',
+  };
+  daemonProc = spawn(pythonPath, ['-m', 'mcp_rtt_server.http_server'], {
+    cwd: serverCwd || undefined,
+    env,
+    windowsHide: true,
+    stdio: 'ignore',
+    detached: false,
+  });
+  daemonProc.on('exit', () => { daemonProc = null; });
+  for (let i = 0; i < 50; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    if (await isDaemonUp(url)) return true;
+  }
+  return false;
+}
+
+function stopDaemon(): void {
+  if (daemonProc) {
+    try { daemonProc.kill(); } catch { /* ignore */ }
+    daemonProc = null;
+  }
+}
+
 async function showMenu(): Promise<void> {
   const items: (vscode.QuickPickItem & { cmd?: string })[] = [
-    { label: '$(plug) Connect to J-Link', description: 'Open J-Link and start RTT', cmd: 'rtt-mcp.connect' },
-    { label: '$(debug-disconnect) Disconnect', description: 'Close J-Link', cmd: 'rtt-mcp.disconnect' },
+    { label: '$(plug) Connect to J-Link', description: 'Start service + open J-Link + stream RTT', cmd: 'rtt-mcp.connect' },
+    { label: '$(debug-disconnect) Disconnect', description: 'Close J-Link (service stays warm)', cmd: 'rtt-mcp.disconnect' },
     { label: '$(arrow-down) Read Accumulated Data', description: 'Pull current RTT buffer', cmd: 'rtt-mcp.read' },
     { label: '$(arrow-up) Write to Down-buffer', description: 'Send a string to the device', cmd: 'rtt-mcp.write' },
     { label: '$(eye) Toggle Continuous Monitor', description: 'Stream RTT data to output channel', cmd: 'rtt-mcp.toggleMonitor' },
@@ -119,6 +179,16 @@ async function connectCmd(): Promise<void> {
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'RTT', cancellable: false },
     async (progress) => {
+      progress.report({ message: 'Starting service...' });
+      const up = await ensureDaemon();
+      if (!up) {
+        const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+        const url = cfg.get<string>('daemonUrl', DAEMON_URL_DEFAULT);
+        const fail = `RTT service failed to start at ${url}`;
+        output.appendLine(`[${ts()}] [RTT ERROR] ${fail}`);
+        vscode.window.showErrorMessage(fail);
+        return;
+      }
       progress.report({ message: 'Connecting to J-Link...' });
       try {
         const result = await provider.connect({

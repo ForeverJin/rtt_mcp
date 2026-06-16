@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ForeverJin/rtt_mcp"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -108,9 +112,14 @@
           "items": { "type": "string" },
           "default": [
             "-m",
-            "mcp_rtt_server.server"
+            "mcp_rtt_server.bridge"
           ],
-          "description": "Arguments passed to the Python interpreter"
+          "description": "Arguments passed to the Python interpreter (the bridge forwards to the shared daemon)"
+        },
+        "rtt-mcp.daemonUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765/sse",
+          "description": "URL of the shared RTT MCP daemon (SSE). The extension starts it if it is not already running."
         },
         "rtt-mcp.pollIntervalMs": {
           "type": "number",

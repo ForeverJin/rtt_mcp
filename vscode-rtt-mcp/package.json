@@ -156,6 +156,22 @@
           "default": 4000,
           "minimum": 100,
           "description": "JTAG/SWD speed in kHz"
+        },
+        "rtt-mcp.channel": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Default RTT channel"
+        },
+        "rtt-mcp.ramStart": {
+          "type": "string",
+          "default": "0x20000000",
+          "description": "RAM window start (hex) for the RTT control-block scan. Default suits HC32L19x; override for other MCUs (e.g. STM32F103: 0x20000000)"
+        },
+        "rtt-mcp.ramSize": {
+          "type": "string",
+          "default": "0x20000",
+          "description": "RAM window size in bytes (hex) for the RTT control-block scan. Default suits HC32L19x (128KB); override for other MCUs (e.g. STM32F103: 0x5000)"
         }
       }
     }

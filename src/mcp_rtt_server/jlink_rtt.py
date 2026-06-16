@@ -14,6 +14,49 @@ from typing import Optional
 import pylink
 
 
+def _default_log_file() -> str:
+    """Resolve the RTT log file path.
+
+    Priority:
+      1. ``RTT_LOG_FILE`` env var (explicit override, any path).
+      2. A portable per-user default under the OS state dir:
+         - Windows: ``%LOCALAPPDATA%\\mcp-rtt-server\\rtt_output.log``
+         - Linux/others: ``$XDG_STATE_HOME/mcp-rtt-server/rtt_output.log``
+           (falls back to ``~/.local/state/...`` when XDG is unset).
+      3. ``tempfile.gettempdir()`` as a last resort.
+
+    The directory is created on demand. This must NOT derive from ``__file__``:
+    a normal ``pip install`` places the package in site-packages, whose parent
+    is not user-writable, and the log open() at connect() would crash.
+    """
+    env = os.environ.get("RTT_LOG_FILE")
+    if env:
+        return os.path.abspath(env)
+
+    # Portable user state directory (POSIX + Windows).
+    local_appdata = os.environ.get("LOCALAPPDATA")  # Windows
+    xdg_state = os.environ.get("XDG_STATE_HOME")    # Linux (if set)
+    if local_appdata:
+        base = os.path.join(local_appdata, "mcp-rtt-server")
+    elif xdg_state:
+        base = os.path.join(xdg_state, "mcp-rtt-server")
+    else:
+        # ~/.local/state on Linux; elsewhere fall back to temp.
+        home = os.path.expanduser("~")
+        if home and home != "~":
+            base = os.path.join(home, ".local", "state", "mcp-rtt-server")
+        else:
+            import tempfile
+            return os.path.join(tempfile.gettempdir(), "mcp-rtt-server-rtt_output.log")
+
+    try:
+        os.makedirs(base, exist_ok=True)
+    except OSError:
+        import tempfile
+        return os.path.join(tempfile.gettempdir(), "mcp-rtt-server-rtt_output.log")
+    return os.path.join(base, "rtt_output.log")
+
+
 @dataclass
 class RTTStatus:
     """RTT connection status."""
@@ -34,16 +77,20 @@ class JLinkRTT:
     data to a log file while storing it in a ring buffer.
     """
 
-    # Log file path for RTT output (always in the mcp-rtt-server directory)
-    RTT_LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "rtt_output.log")
+    # Log file path for RTT output. Computed once via _default_log_file() below:
+    # env override wins, else a portable user-writable default (LOCALAPPDATA on
+    # Windows, XDG_STATE_HOME on Linux, temp dir as last resort). Resolves to a
+    # writable location whether the package is installed editable or normally
+    # (a normal install puts us in site-packages, whose parent is NOT writable —
+    # the old "walk up 3 dirs from __file__" form crashed the daemon on connect).
+    RTT_LOG_FILE = None  # set in __init__ via _default_log_file()
     # Max log file size in bytes (default: 1MB)
     LOG_MAX_SIZE = 1 * 1024 * 1024
 
     def __init__(
         self,
         serial: Optional[str] = None,
-        device: str = "HC32L19x",
+        device: str = "Cortex-M0+",
         speed: int = 4000,
         channel: int = 0,
         ring_buffer_size: int = 100,
@@ -70,6 +117,9 @@ class JLinkRTT:
         self._log_size = 0  # Track log file size for rotation
         self._line_buf = ""  # Partial line buffer for line-aligned timestamping
         self._max_line_buf = 4096  # Max partial line buffer size (bytes)
+        # Resolve the per-instance log path (env override > portable default).
+        # Overrides the class-level RTT_LOG_FILE=None so all methods see a real path.
+        self.RTT_LOG_FILE = _default_log_file()
 
     @staticmethod
     def _ts() -> str:
@@ -519,7 +569,7 @@ def get_instance() -> JLinkRTT:
     if _rtt_instance is None:
         # Load from environment variables
         serial = os.environ.get("JLINK_SERIAL")
-        device = os.environ.get("JLINK_DEVICE", "HC32L19x")
+        device = os.environ.get("JLINK_DEVICE", "Cortex-M0+")
         speed = int(os.environ.get("JLINK_SPEED", "4000"))
         channel = int(os.environ.get("RTT_CHANNEL", "0"))
         ring_size = int(os.environ.get("RTT_RING_BUFFER_SIZE", "100"))

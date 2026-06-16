@@ -27,9 +27,9 @@ def get_tool_definitions() -> list[Tool]:
                     },
                     "device": {
                         "type": "string",
-                        "description": "Target device name (default: HC32L19x). "
-                                       "Examples: Cortex-M0+, STM32F103, etc.",
-                        "default": "HC32L19x",
+                        "description": "Target device name (default: Cortex-M0+). "
+                                       "Examples: HC32L19x, STM32F103, Cortex-M0+, etc.",
+                        "default": "Cortex-M0+",
                     },
                     "speed": {
                         "type": "integer",
@@ -178,7 +178,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "jlink_connect":
         serial = arguments.get("serial")
-        device = arguments.get("device", "HC32L19x")
+        device = arguments.get("device", "Cortex-M0+")
         speed = arguments.get("speed", 4000)
 
         # Shared daemon: if a connection already exists (another client opened it),

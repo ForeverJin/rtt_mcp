@@ -98,8 +98,17 @@ async def main() -> None:
     await run_proxy_over_stdio()
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Console-script entry point (``rtt-mcp-bridge``).
+
+    Installed by ``pip install`` so the VSCode extension can launch the bridge by
+    name. Equivalent to ``python -m mcp_rtt_server.bridge``.
+    """
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         sys.exit(0)
+
+
+if __name__ == "__main__":
+    cli()

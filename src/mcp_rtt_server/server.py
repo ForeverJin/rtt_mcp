@@ -83,7 +83,13 @@ async def main():
     await run_direct_owner()
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Console-script entry point (``rtt-mcp-server``).
+
+    Installed by ``pip install`` so Claude Code / the VSCode extension can launch
+    the server by name without an absolute ``python`` path or a project-specific
+    ``cwd``. Equivalent to ``python -m mcp_rtt_server.server``.
+    """
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -92,3 +98,7 @@ if __name__ == "__main__":
         if rtt.is_connected():
             rtt.disconnect()
         sys.exit(0)
+
+
+if __name__ == "__main__":
+    cli()

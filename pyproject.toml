@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "Your Name" }
+    { name = "ForeverJin" }
 ]
 dependencies = [
     # Core MCP SDK. The SSE transport (http_server.py / bridge.py) imports uvicorn,
@@ -23,6 +23,13 @@ dependencies = [
     "httpx-sse>=0.4.0",
     "pylink-square>=0.14.0",
 ]
+
+[project.scripts]
+# After `pip install`, these commands land on PATH so Claude Code / the VSCode
+# extension can launch the tool by name — no absolute python path, no project cwd.
+rtt-mcp-server = "mcp_rtt_server.server:cli"     # stdio server (Claude Code entry)
+rtt-mcp-daemon = "mcp_rtt_server.http_server:main"  # SSE daemon (single J-Link owner)
+rtt-mcp-bridge = "mcp_rtt_server.bridge:cli"     # stdio<->SSE bridge (extension)
 
 [project.optional-dependencies]
 dev = [

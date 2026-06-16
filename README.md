@@ -19,31 +19,61 @@ An MCP server that provides access to Segger RTT (Real Time Transfer) through a 
 - A J-Link compatible debugger
 - Target device running SEGGER RTT
 
-## Installation
+## Installation（新机器一键装机）
+
+本工具**装一次、全局可用**——不绑死任何单片机工程，不依赖具体 VSCode 工作区。
+
+### 前置依赖
+
+- **Python 3.10+**（在 PATH 上）
+- **SEGGER J-Link 软件**（提供 `JLinkARM.dll`；pylink 在连接 J-Link 时才加载它，安装期不强制）——连硬件前装好
+- 可选：**VS Code + `code` CLI**（用配套扩展时需要）
+
+### 一键安装
+
+```powershell
+# Windows（在 mcp-rtt-server 目录下）
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+```bash
+# macOS / Linux
+./install.sh
+```
+
+脚本完成：非 editable `pip install`（生成 `rtt-mcp-server` / `rtt-mcp-daemon` / `rtt-mcp-bridge` 三个控制台脚本）→ 可选装 VSCode 扩展 → 在 **Claude Code 用户级**注册 `rtt`（绝对路径、无 cwd，任意工作区可用）→ 烟测。
+
+### 手动安装
 
 ```bash
-# Clone or navigate to this directory
 cd mcp-rtt-server
+pip install .                       # 部署用（非 editable）；开发用 pip install -e .
+```
 
-# Install dependencies
-pip install -e .
+注册到 Claude Code（**用户级**——任意工作区可用；用绝对 .exe，因 Claude 经 `spawn` 启动，Windows 下不搜 PATHEXT）：
+
+```bash
+# 取脚本目录
+SCRIPTS=$(python -c "import sysconfig;print(sysconfig.get_path('scripts'))")
+
+claude mcp remove --scope user rtt 2>/dev/null
+claude mcp add --scope user rtt "$SCRIPTS/rtt-mcp-server.exe"   # Windows
+# claude mcp add --scope user rtt "$SCRIPTS/rtt-mcp-server"     # macOS/Linux
+```
+
+### 烟测（不需 J-Link）
+
+```bash
+rtt-mcp-daemon --help     # 正常打印 usage 说明 import + console script OK
 ```
 
 ## Usage
 
-### Step 1: 安装
-
-```bash
-cd mcp-rtt-server
-pip install -e .
-```
-
-### Step 2: 启动守护进程（可选，推荐）
+### 启动守护进程（可选，推荐）
 
 守护进程是"单一 J-Link 拥有者"。VSCode 扩展会自动启动它；手动调试/独立使用时也可以自己起：
 
 ```bash
-python -m mcp_rtt_server.http_server --host 127.0.0.1 --port 8765
+rtt-mcp-daemon --host 127.0.0.1 --port 8765
 ```
 
 > 不启动也没关系：Claude Code（`server.py`）会探测守护进程，可达则经它代理，不可达则直接开 J-Link（独立会话模式）。
@@ -83,21 +113,23 @@ tail -f ./rtt_output.log
 
 ### Claude Code 集成
 
-在项目 `.claude/settings.json` 中添加：
+一键脚本已自动注册（用户级，任意工作区可用）。手动注册：
 
-```json
-{
-  "mcpServers": {
-    "rtt": {
-      "command": "python",
-      "args": ["-m", "mcp_rtt_server.server"],
-      "cwd": "."
-    }
-  }
-}
+```bash
+# 用 install.ps1 / install.sh，或：
+SCRIPTS=$(python -c "import sysconfig;print(sysconfig.get_path('scripts'))")
+claude mcp add --scope user rtt "$SCRIPTS/rtt-mcp-server.exe"   # Windows
+# claude mcp add --scope user rtt "$SCRIPTS/rtt-mcp-server"     # macOS/Linux
 ```
 
-> **注意**：如果 `python` 不在 PATH 中，需替换为完整路径（如 `C:\Python313\python.exe` 或 `/usr/bin/python3`）。
+> **用户级（user scope）= 与工程无关**：注册一次后，任意 Claude Code 会话（无论打开哪个工作区）都能用 `rtt` 工具。**不要**在项目 `.claude/settings.json` 里重复写 `mcpServers.rtt`——那会用绝对路径覆盖用户级配置。
+
+> **指定芯片**：默认设备 `Cortex-M0+`（泛用）。针对某工程固定芯片，按工程覆盖环境变量：
+> ```bash
+> claude mcp remove --scope user rtt
+> claude mcp add --scope user rtt "$SCRIPTS/rtt-mcp-server.exe" -e JLINK_DEVICE=HC32L19x
+> ```
+> 或调用 `jlink_connect` 时直接传 `device` 参数（优先级最高）。
 
 > **单拥有者行为**：`server.py` 启动时探测守护进程（`http://127.0.0.1:8765/sse`）——可达则经 SSE 代理所有工具调用（**不开第二个 J-Link**），与 VSCode 扩展共享同一连接，零争用；守护进程未运行则自动回退为直接开 J-Link（Claude-only 会话）。无需手动选择模式。
 
@@ -181,7 +213,7 @@ Wrote 7 bytes to RTT channel 0
                                                              │ USB
                                                              ▼
                                                       ┌──────────────┐
-                                                      │ J-Link Probe │── SWD ──▶ Target (HC32L19x, SEGGER RTT)
+                                                      │ J-Link Probe │── SWD ──▶ Target (任意 MCU, SEGGER RTT)
                                                       └──────────────┘
 ```
 
@@ -204,13 +236,14 @@ Wrote 7 bytes to RTT channel 0
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `JLINK_SERIAL` | (none) | J-Link serial number |
-| `JLINK_DEVICE` | `HC32L19x` | Target device name |
+| `JLINK_DEVICE` | `Cortex-M0+` | Target device name（泛用默认；按工程覆盖，如 `HC32L19x`/`STM32F103`） |
 | `JLINK_SPEED` | `4000` | SWD speed in kHz |
-| `JLINK_RAM_START` | `0x20000000` | RAM 起始地址（扫描 RTT 控制块用） |
-| `JLINK_RAM_SIZE` | `0x8000` | RAM 扫描窗口大小（字节） |
+| `JLINK_RAM_START` | `0x20000000` | RAM 起始地址（扫描 RTT 控制块用，按 MCU 调整） |
+| `JLINK_RAM_SIZE` | `0x8000` | RAM 扫描窗口大小（字节，按 MCU 调整） |
 | `RTT_CHANNEL` | `0` | Default RTT channel |
 | `RTT_RING_BUFFER_SIZE` | `100` | Ring buffer entries |
 | `RTT_POLL_INTERVAL_MS` | `10` | Poll interval in ms |
+| `RTT_LOG_FILE` | 可移植默认 | RTT 输出日志路径（留空=`%LOCALAPPDATA%\mcp-rtt-server\rtt_output.log` / `~/.local/state/...`；设值则覆盖） |
 | `RTT_DAEMON_URL` | `http://127.0.0.1:8765/sse` | 守护进程 SSE 地址（`server.py`/`bridge.py` 探测与代理用） |
 | `RTT_AUTH_TOKEN` | (none) | 可选：设此值后 `/sse`、`/messages/`、`/shutdown` 需 `Authorization: Bearer <token>`；不设则开放给本机任意进程 |
 

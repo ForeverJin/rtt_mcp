@@ -123,14 +123,16 @@ async function ensureDaemon(): Promise<boolean> {
   const pythonPath = cfg.get<string>('pythonPath', 'python');
   const serverCwd = cfg.get<string>('serverCwd', '');
   // The daemon reads these at first connect (module-global singleton). The RAM
-  // window must cover STM32F407 SRAM so the RTT control-block scan finds it.
+  // window must cover the target's SRAM so the RTT control-block scan finds it;
+  // defaults suit HC32L19x (0x20000000, 0x20000). Override via rtt-mcp.ramStart /
+  // rtt-mcp.ramSize for a different MCU (e.g. STM32F103: 0x20000000 / 0x5000).
   const env = {
     ...process.env,
     JLINK_DEVICE: cfg.get<string>('device', 'HC32L19x'),
     JLINK_SPEED: String(cfg.get<number>('speed', 4000)),
-    JLINK_RAM_START: '0x20000000',
-    JLINK_RAM_SIZE: '0x20000',
-    RTT_CHANNEL: '0',
+    JLINK_RAM_START: cfg.get<string>('ramStart', '0x20000000'),
+    JLINK_RAM_SIZE: cfg.get<string>('ramSize', '0x20000'),
+    RTT_CHANNEL: String(cfg.get<number>('channel', 0)),
   };
   daemonProc = spawn(pythonPath, ['-m', 'mcp_rtt_server.http_server'], {
     cwd: serverCwd || undefined,

@@ -38,6 +38,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
+from starlette.types import Receive, Scope, Send
 
 from .jlink_rtt import get_instance
 from .tools import get_tool_definitions, call_tool
@@ -122,11 +123,17 @@ def create_app() -> Starlette:
             )
         return Response()
 
-    async def handle_post(request: Request) -> Response:
-        # Gate the client->server message channel with the same token as /sse.
+    async def handle_post(scope: Scope, receive: Receive, send: Send) -> None:
+        # ASGI signature: required by Mount("/messages/", app=handle_post).
+        # sse.handle_post_message also takes (scope, receive, send), so we forward
+        # them through (the previous version wrapped it as `(request) -> Response`
+        # which crashed at runtime with a signature mismatch → 500 on every POST).
+        request = Request(scope, receive)
         if not _authorized(request):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await sse.handle_post_message(request)
+            response = JSONResponse({"error": "unauthorized"}, status_code=401)
+            await response(scope, receive, send)
+            return
+        await sse.handle_post_message(scope, receive, send)
 
     async def handle_shutdown(request: Request) -> Response:
         # Same gate as the other endpoints so a token-enabled daemon can't be

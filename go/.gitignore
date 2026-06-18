@@ -1,0 +1,12 @@
+# Built binaries
+*.exe
+rtt-mcp-server
+
+# Go workspace / test artifacts
+*.test
+*.out
+vendor/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

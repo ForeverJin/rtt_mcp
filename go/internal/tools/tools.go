@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -60,6 +61,18 @@ func Register(s *mcp.Server) {
 			Name:        "rtt_list_devices",
 			Description: "List available J-Link debuggers connected to the host.",
 		}, handleListDevices)
+
+	mcp.AddTool(s,
+		&mcp.Tool{
+			Name:        "rtt_list_supported_devices",
+			Description: "List device names in the loaded J-Link device database (probe-less; works before connecting). Pass `query` for a case-insensitive substring filter. Use an exact returned name (e.g. STM32F407VE) as the `device` argument to jlink_connect.",
+		}, handleListSupportedDevices)
+
+	mcp.AddTool(s,
+		&mcp.Tool{
+			Name:        "rtt_check_device",
+			Description: "Check whether a device name exists in the loaded J-Link device database (probe-less). Returns supported (yes/no) and the J-Link index.",
+		}, handleCheckDevice)
 
 	mcp.AddTool(s,
 		&mcp.Tool{
@@ -197,6 +210,57 @@ func handleListDevices(ctx context.Context, req *mcp.CallToolRequest, in struct{
 		b = append(b, '\n')
 	}
 	return text(string(b)), nil, nil
+}
+
+type listSupportedIn struct {
+	Query *string `json:"query,omitempty"`
+	Limit *int    `json:"limit,omitempty"`
+}
+
+func handleListSupportedDevices(ctx context.Context, req *mcp.CallToolRequest, in listSupportedIn) (*mcp.CallToolResult, any, error) {
+	c := rttcore.Get()
+	n := c.SupportedDeviceCount()
+	query := strings.ToLower(strings.TrimSpace(derefStr(in.Query)))
+	limit := derefInt(in.Limit)
+	if limit <= 0 {
+		limit = 20000
+	}
+	var b []byte
+	b = append(b, fmt.Sprintf("%d device(s) in the J-Link database.\n", n)...)
+	matched := 0
+	for i := 0; i < n && matched < limit; i++ {
+		name := c.SupportedDeviceName(i)
+		if name == "" {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(name), query) {
+			continue
+		}
+		b = append(b, name...)
+		b = append(b, '\n')
+		matched++
+	}
+	if matched >= limit && n > limit {
+		b = append(b, fmt.Sprintf("... truncated at %d matches; pass a more specific `query`.\n", limit)...)
+	}
+	return text(string(b)), nil, nil
+}
+
+type checkDeviceIn struct {
+	Device *string `json:"device,omitempty"`
+}
+
+func handleCheckDevice(ctx context.Context, req *mcp.CallToolRequest, in checkDeviceIn) (*mcp.CallToolResult, any, error) {
+	c := rttcore.Get()
+	dev := strings.TrimSpace(derefStr(in.Device))
+	if dev == "" {
+		return text("No device name given."), nil, nil
+	}
+	idx := c.SupportedDeviceIndex(dev)
+	if idx > 0 {
+		return text(fmt.Sprintf("Supported: %q is in the J-Link device database (index %d).", dev, idx)), nil, nil
+	}
+	return text(fmt.Sprintf("Not supported: %q is NOT in the J-Link device database. Use rtt_list_supported_devices to find the exact name J-Link expects.", dev)), nil, nil
 }
 
 func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {

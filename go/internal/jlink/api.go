@@ -43,6 +43,11 @@ var (
 	jlinkCore2CoreName func(cpu int32, buf *byte, bufSize int32)
 	jlinkEMUProdName   func(buf *byte, bufSize int32)
 	jlinkEMUNumDevices func() int32
+	// Device database (works probe-less, just needs the DLL loaded):
+	// JLINKARM_DEVICE_GetInfo(-1, nil) -> device count; GetInfo(i, &buf) -> fills a
+	// JLinkDeviceInfo struct whose sName (offset 8) names device i.
+	jlinkDeviceInfo  func(index int32, buf uintptr) int32
+	jlinkDeviceIndex func(name *byte) int32
 
 	rttControl func(cmd int32, p uintptr) int32
 	rttRead    func(bufIdx int32, buf *byte, n int32) int32
@@ -60,6 +65,15 @@ var (
 // path overrides auto-detection. Returns the load error if the library cannot
 // be opened; missing individual symbols are tolerated and reported separately.
 func Load(explicit string) error {
+	// An explicit path wins; otherwise honour the documented JLINK_LIB_PATH /
+	// RTT_LIB_PATH env override before falling back to auto-detection.
+	if explicit == "" {
+		if v := os.Getenv("JLINK_LIB_PATH"); v != "" {
+			explicit = v
+		} else if v := os.Getenv("RTT_LIB_PATH"); v != "" {
+			explicit = v
+		}
+	}
 	libOnce.Do(func() {
 		libHandle, libLoadErr = loadJLinkLib(explicit)
 		if libLoadErr != nil {
@@ -92,6 +106,8 @@ func registerSymbols() {
 		{&jlinkCore2CoreName, "JLINKARM_Core2CoreName", false},
 		{&jlinkEMUProdName, "JLINKARM_EMU_GetProductName", false},
 		{&jlinkEMUNumDevices, "JLINKARM_EMU_GetNumDevices", false},
+		{&jlinkDeviceInfo, "JLINKARM_DEVICE_GetInfo", false},
+		{&jlinkDeviceIndex, "JLINKARM_DEVICE_GetIndex", false},
 		{&rttControl, "JLINK_RTTERMINAL_Control", true},
 		{&rttRead, "JLINK_RTTERMINAL_Read", true},
 		{&rttWrite, "JLINK_RTTERMINAL_Write", true},

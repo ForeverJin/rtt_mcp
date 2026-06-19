@@ -398,6 +398,13 @@ func (c *Core) ListDevices() []string {
 	return c.backend.ListDevices()
 }
 
+// SupportedDeviceCount / SupportedDeviceName / SupportedDeviceIndex expose the
+// J-Link device database to the list/validate tools. They are probe-less: only
+// the loaded SEGGER DLL is consulted, so they work before jlink_connect.
+func (c *Core) SupportedDeviceCount() int             { return c.backend.SupportedDeviceCount() }
+func (c *Core) SupportedDeviceName(i int) string      { return c.backend.SupportedDeviceName(i) }
+func (c *Core) SupportedDeviceIndex(name string) int  { return c.backend.SupportedDeviceIndex(name) }
+
 // Clear empties the in-memory ring (does not touch device buffers).
 func (c *Core) Clear() {
 	c.ring.clear()

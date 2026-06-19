@@ -87,6 +87,28 @@ func (m *mockBackend) RTTNumUpBuffers() (int, error)                  { return 2
 func (m *mockBackend) RTTNumDownBuffers() (int, error)                { return 2, nil }
 func (m *mockBackend) ListDevices() []string                          { return m.devices }
 
+// mockSupportedDB is a tiny stand-in for the J-Link device database so the
+// list/validate tools can be exercised under RTT_MOCK without the SEGGER DLL.
+var mockSupportedDB = []string{"Cortex-M0+", "Cortex-M4", "STM32F407VE", "HC32L19x"}
+
+func (m *mockBackend) SupportedDeviceCount() int { return len(mockSupportedDB) }
+
+func (m *mockBackend) SupportedDeviceName(index int) string {
+	if index < 0 || index >= len(mockSupportedDB) {
+		return ""
+	}
+	return mockSupportedDB[index]
+}
+
+func (m *mockBackend) SupportedDeviceIndex(name string) int {
+	for i, d := range mockSupportedDB {
+		if d == name {
+			return i + 1 // >=1 means "found", mirroring pylink's convention
+		}
+	}
+	return -1
+}
+
 func (m *mockBackend) Opened() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

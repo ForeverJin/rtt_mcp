@@ -3,6 +3,7 @@ package jlink
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -18,12 +19,24 @@ func defaultLibCandidates() []string {
 		// Win32 application". Pick by process architecture so the first candidate
 		// matches the build.
 		if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-			return []string{
+			// SEGGER's installer lands in a version-suffixed folder
+			// (JLink_V950, JLink_V796g, …), not a bare "JLink". Glob every
+			// SEGGER subfolder so we find whatever version is installed.
+			cands := append([]string{}, globSegger("JLink_x64.dll")...)
+			cands = append(cands,
 				`C:\Program Files\SEGGER\JLink\JLink_x64.dll`,
 				`C:\Program Files\SEGGER\JLink\JLinkARM.dll`,
 				`JLink_x64.dll`,
-			}
+			)
+			return cands
 		}
+		cands := append([]string{}, globSegger("JLinkARM.dll")...)
+		cands = append(cands,
+			`C:\Program Files (x86)\SEGGER\JLink\JLinkARM.dll`,
+			`C:\Program Files\SEGGER\JLink\JLinkARM.dll`,
+			`JLinkARM.dll`,
+		)
+		return cands
 		return []string{
 			`C:\Program Files (x86)\SEGGER\JLink\JLinkARM.dll`,
 			`C:\Program Files\SEGGER\JLink\JLinkARM.dll`,
@@ -48,6 +61,22 @@ func defaultLibCandidates() []string {
 	default:
 		return nil
 	}
+}
+
+// globSegger returns JLink DLLs inside any subfolder of the SEGGER install
+// directories (Program Files and Program Files (x86)), so versioned installs
+// like JLink_V950 are found regardless of the folder name. Returns matches in
+// sorted (glob) order.
+func globSegger(dll string) []string {
+	var out []string
+	for _, base := range []string{
+		`C:\Program Files\SEGGER`,
+		`C:\Program Files (x86)\SEGGER`,
+	} {
+		matches, _ := filepath.Glob(filepath.Join(base, "*", dll))
+		out = append(out, matches...)
+	}
+	return out
 }
 
 // loadJLinkLib opens the SEGGER shared library. If explicit is non-empty it is

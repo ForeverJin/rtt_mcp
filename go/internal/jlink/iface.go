@@ -62,6 +62,18 @@ type RTTBackend interface {
 	// ListDevices enumerates connected probes (best-effort; may be empty).
 	ListDevices() []string
 
+	// SupportedDeviceCount returns the number of devices in the loaded J-Link
+	// device database. Works without a connected probe (just needs the DLL).
+	SupportedDeviceCount() int
+
+	// SupportedDeviceName returns the name of device at the given index, or ""
+	// if the index is out of range / unsupported by this DLL build.
+	SupportedDeviceName(index int) string
+
+	// SupportedDeviceIndex returns the database index of the named device, or
+	// a value <= 0 if it is not supported (mirrors pylink get_device_index).
+	SupportedDeviceIndex(name string) int
+
 	// Opened reports whether a probe has been successfully opened.
 	Opened() bool
 }

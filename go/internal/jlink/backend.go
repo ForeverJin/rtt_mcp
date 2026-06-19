@@ -12,6 +12,14 @@ import (
 // maxBufSize is the scratch buffer length used for string-returning calls.
 const maxBufSize = 256
 
+// deviceInfoStructSize is the byte size of SEGGER's JLinkDeviceInfo struct that
+// JLINKARM_DEVICE_GetInfo(index, &buf) fills. It must match the loaded J-Link
+// DLL's ABI; it tracks pylink-square's structs.JLinkDeviceInfo (J-Link V9.50 =
+// 568). sName is a char* at offset 8. If a J-Link upgrade changes the struct,
+// recompute with:
+//   python -c "import ctypes,pylink.structs as s; print(ctypes.sizeof(s.JLinkDeviceInfo))"
+const deviceInfoStructSize = 568
+
 // puregoBackend implements RTTBackend by calling the SEGGER DLL via purego.
 type puregoBackend struct {
 	mu     sync.Mutex
@@ -233,6 +241,62 @@ func (b *puregoBackend) ListDevices() []string {
 		out = append(out, fmt.Sprintf("J-Link #%d", i))
 	}
 	return out
+}
+
+// ensureLib loads the SEGGER library (idempotent) and reports whether its
+// essential symbols resolved. Device-database queries need the DLL loaded but
+// NOT a connected probe, so this is the only precondition for the methods below.
+func (b *puregoBackend) ensureLib() error {
+	if err := Load(""); err != nil {
+		return err
+	}
+	return essentialMissing()
+}
+
+// SupportedDeviceCount returns the size of the J-Link device database.
+// JLINKARM_DEVICE_GetInfo(-1, nil) yields the count; 0 if unsupported.
+func (b *puregoBackend) SupportedDeviceCount() int {
+	if err := b.ensureLib(); err != nil {
+		return 0
+	}
+	if jlinkDeviceInfo == nil {
+		return 0
+	}
+	return int(jlinkDeviceInfo(-1, 0))
+}
+
+// SupportedDeviceName returns device at index, or "" on failure.
+func (b *puregoBackend) SupportedDeviceName(index int) string {
+	if err := b.ensureLib(); err != nil {
+		return ""
+	}
+	if jlinkDeviceInfo == nil {
+		return ""
+	}
+	var buf [deviceInfoStructSize]byte
+	// SizeofStruct at offset 0 must be set before the call (SEGGER checks it).
+	*(*uint32)(unsafe.Pointer(&buf[0])) = deviceInfoStructSize
+	if r := jlinkDeviceInfo(int32(index), uintptr(unsafe.Pointer(&buf[0]))); r < 0 {
+		return ""
+	}
+	// sName is a NUL-terminated char* at offset 8.
+	namePtr := *(**byte)(unsafe.Pointer(&buf[8]))
+	return cString(namePtr)
+}
+
+// SupportedDeviceIndex returns the database index of name, or <= 0 if absent.
+func (b *puregoBackend) SupportedDeviceIndex(name string) int {
+	if name == "" {
+		return -1
+	}
+	if err := b.ensureLib(); err != nil {
+		return -1
+	}
+	if jlinkDeviceIndex == nil {
+		return -1
+	}
+	cname := append([]byte(name), 0)
+	return int(jlinkDeviceIndex(&cname[0]))
 }
 
 func (b *puregoBackend) Opened() bool {

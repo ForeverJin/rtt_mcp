@@ -72,7 +72,7 @@ export class McpClient {
     }
 
     this.proc = spawn(this.command, this.args, {
-      cwd: this.cwd,
+      cwd: this.cwd || undefined,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       windowsVerbatimArguments: false,

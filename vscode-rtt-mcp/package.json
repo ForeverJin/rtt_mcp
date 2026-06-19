@@ -2,7 +2,7 @@
   "name": "vscode-rtt-mcp",
   "displayName": "RTT MCP Quick Access",
   "description": "Quick access to mcp-rtt-server (J-Link RTT) tools via status bar and command palette",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -97,24 +97,18 @@
     "configuration": {
       "title": "RTT MCP",
       "properties": {
-        "rtt-mcp.pythonPath": {
-          "type": "string",
-          "default": "python",
-          "description": "Python interpreter used to launch the MCP server (must be on PATH or set to full path)"
-        },
-        "rtt-mcp.serverCwd": {
+        "rtt-mcp.binaryPath": {
           "type": "string",
           "default": "",
-          "description": "Working directory for the MCP server (must contain the mcp_rtt_server package). Leave empty to use the bundled server."
+          "description": "Path to the rtt-mcp-server Go binary. Leave empty to use the binary bundled with this extension; set an absolute path (or a name on PATH) to use your own build."
         },
         "rtt-mcp.serverArgs": {
           "type": "array",
           "items": { "type": "string" },
           "default": [
-            "-m",
-            "mcp_rtt_server.bridge"
+            "bridge"
           ],
-          "description": "Arguments passed to the Python interpreter (the bridge forwards to the shared daemon)"
+          "description": "Args passed to the Go binary for the MCP stdio client. 'bridge' proxies to the shared daemon; use [] (or ['serve']) to have this client own the J-Link directly."
         },
         "rtt-mcp.daemonUrl": {
           "type": "string",
@@ -134,22 +128,8 @@
         },
         "rtt-mcp.device": {
           "type": "string",
-          "default": "HC32L19x",
-          "description": "Target MCU device name passed to J-Link (e.g. HC32L19x, STM32F103, Cortex-M0+)",
-          "enum": [
-            "HC32L19x",
-            "Cortex-M0+",
-            "STM32F103",
-            "STM32F407",
-            "GD32F103"
-          ],
-          "enumDescriptions": [
-            "HDSC HC32L19x (华大半导体)",
-            "Generic ARM Cortex-M0+",
-            "ST STM32F103",
-            "ST STM32F407",
-            "GigaDevice GD32F103"
-          ]
+          "default": "Cortex-M0+",
+          "description": "J-Link device name. Use a generic ARM core (Cortex-M0+/M0/M3/M4/M7/M33 — always valid, sufficient for RTT) or the EXACT part name from your J-Link device database (e.g. STM32F407VE, HC32L196). A name not in J-Link's list fails to connect; the backend then falls back to Cortex-M0+."
         },
         "rtt-mcp.speed": {
           "type": "integer",

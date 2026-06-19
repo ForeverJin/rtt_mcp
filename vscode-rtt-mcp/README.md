@@ -52,28 +52,26 @@ Open Settings (Ctrl+,) and search "RTT MCP", or add to `.vscode/settings.json`:
 
 ```json
 {
-  "rtt-mcp.pythonPath": "python",
-  "rtt-mcp.serverCwd": "",
-  "rtt-mcp.serverArgs": ["-m", "mcp_rtt_server.bridge"],
+  "rtt-mcp.binaryPath": "",
+  "rtt-mcp.serverArgs": ["bridge"],
   "rtt-mcp.daemonUrl": "http://127.0.0.1:8765/sse",
   "rtt-mcp.pollIntervalMs": 300,
   "rtt-mcp.autoConnect": false,
-  "rtt-mcp.device": "HC32L19x",
+  "rtt-mcp.device": "Cortex-M0+",
   "rtt-mcp.speed": 4000
 }
 ```
 
-> **注意**：`pythonPath` 默认使用 PATH 中的 `python`，如果不在 PATH 中需改为完整路径。`serverCwd` 留空表示自动定位，如需指定可填 `mcp-rtt-server` 的绝对路径。
+> **注意**：`binaryPath` 留空表示用扩展自带的 Go 二进制；也可填绝对路径或 PATH 上的名字指向你自己的构建。`device` 必须是 **J-Link 设备库里存在的名字**——通用 ARM 核（`Cortex-M0+`/`M3`/`M4`/`M7`/`M33`）始终有效且足以跑 RTT；若要指定具体型号，必须与 J-Link（JFlash / J-Link Configurator）里列出的**完全一致**（如 `STM32F407VE`、`HC32L196`）。名字不在列表里会连接失败，后端会回退到 `Cortex-M0+`。
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `rtt-mcp.pythonPath` | `python` | Python interpreter (on PATH or full path) |
-| `rtt-mcp.serverCwd` | (empty) | MCP server working dir (auto-detect if empty) |
-| `rtt-mcp.serverArgs` | `["-m", "mcp_rtt_server.bridge"]` | Client-side stdio process (the **bridge** forwards to the shared daemon) |
+| `rtt-mcp.binaryPath` | (empty) | rtt-mcp-server Go binary; empty = use the bundled one, or an absolute path / PATH name |
+| `rtt-mcp.serverArgs` | `["bridge"]` | Args for the stdio client; `bridge` proxies to the shared daemon |
 | `rtt-mcp.daemonUrl` | `http://127.0.0.1:8765/sse` | Shared daemon SSE URL; extension starts it if not running |
 | `rtt-mcp.pollIntervalMs` | `300` | Monitor poll interval (ms) |
 | `rtt-mcp.autoConnect` | `false` | Connect on activation |
-| `rtt-mcp.device` | `HC32L19x` | Target MCU name (enum) |
+| `rtt-mcp.device` | `Cortex-M0+` | J-Link device name (free text); generic ARM core or exact part name from J-Link's list |
 | `rtt-mcp.speed` | `4000` | SWD speed in kHz |
 
 ## Usage

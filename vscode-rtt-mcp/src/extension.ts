@@ -1,18 +1,18 @@
 /**
  * VSCode extension entry point.
  *
- * Wires up commands, status bar, and output channel around RttProvider.
- * The status bar item is the primary entry point - click it for a quick menu.
+ * Wires up commands, status bar, and a dedicated "RTT" monitor panel around
+ * RttProvider. The status bar item is the primary entry point - click it for a
+ * quick menu.
  */
 
 import { ChildProcess, spawn } from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { RttProvider } from './rttProvider';
-
-const RTT_OUTPUT_NAME = 'RTT';
 
 /** Format current time as [HH:MM:SS.mmm] for log output. */
 function ts(): string {
@@ -26,8 +26,167 @@ function ts(): string {
 
 let provider: RttProvider;
 let statusBar: vscode.StatusBarItem;
-let output: vscode.OutputChannel;
 let disposables: vscode.Disposable[] = [];
+
+// Dedicated "RTT" panel — a webview view in the bottom panel (its own tab, like
+// the MS Serial Monitor), with a scrolling output area and an input box. This
+// replaces both the OutputChannel and the pseudoterminal (which lived in the
+// integrated Terminal panel).
+class RttMonitorViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = 'rtt-mcp.rttMonitor';
+
+  private view?: vscode.WebviewView;
+  // RTT data that arrived before the panel was first revealed; flushed on resolve.
+  private pending: { text: string; cls?: string }[] = [];
+
+  resolveWebviewView(view: vscode.WebviewView): void {
+    this.view = view;
+    view.webview.options = { enableScripts: true };
+    view.webview.html = this.html();
+    view.webview.onDidReceiveMessage((m) => this.onMessage(m));
+    for (const e of this.pending) this.post(e.text, e.cls);
+    this.pending = [];
+  }
+
+  /** Append device bytes (no cls) or a status line ('meta'). */
+  append(text: string, cls?: string): void {
+    if (this.view) {
+      this.post(text, cls);
+    } else {
+      this.pending.push({ text, cls });
+      if (this.pending.length > 2000) this.pending.splice(0, this.pending.length - 2000);
+    }
+  }
+
+  /** Clear the monitor's output area. */
+  clear(): void {
+    this.view?.webview.postMessage({ type: 'clear' });
+  }
+
+  private post(text: string, cls?: string): void {
+    this.view?.webview.postMessage({ type: 'append', text, cls });
+  }
+
+  private onMessage(m: unknown): void {
+    const msg = m as { type?: string; text?: string };
+    if (msg.type === 'input' && typeof msg.text === 'string' && provider.isConnected) {
+      void provider.write(`${msg.text}\r\n`).catch((e) =>
+        rttLine(`[RTT TX error] ${(e as Error).message}`));
+    }
+  }
+
+  private html(): string {
+    const localEcho = vscode.workspace.getConfiguration('rtt-mcp').get<boolean>('localEcho', true);
+    const nonce = crypto.randomBytes(16).toString('base64');
+    // Defined as real regex literals here (correctly escaped) and interpolated into
+    // the webview below via ${}. Writing them inline inside the template mangles the
+    // escapes: a template literal turns \b into backspace and \[ into '['.
+    const RE_ERR = /(\b(?:error|err|failed|fails|failure|fatal|panic|assert|fault|exception)\b|\[(?:E|F|C)\]|<(?:E|F|C)>|<err>|<fatal>)/i;
+    const RE_WARN = /(\b(?:warn|warning)\b|\[W\]|<W>|<warn>)/i;
+    const RE_DEBUG = /(\b(?:debug|dbg|trace|verbose)\b|\[D\]|<D>|<dbg>)/i;
+    const RE_INFO = /(\b(?:info|information)\b|\[I\]|<I>|<inf>|^\s*I \(\d+\))/i;
+    const RE_TX = /\[RTT (?:TX|TX error)\]/i;
+    const RE_TRAIL = /\r+$/;
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'">
+<style>
+  html,body{height:100%;margin:0;}
+  body{display:flex;flex-direction:column;background:var(--vscode-editor-background);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family),Consolas,monospace;font-size:var(--vscode-editor-font-size,13px);}
+  #out{flex:1;overflow-y:auto;padding:6px 8px;}
+  #out .lvl{white-space:pre-wrap;word-break:break-word;}
+  #out .lvl.err{color:var(--vscode-terminal-ansiRed,var(--vscode-errorForeground));}
+  #out .lvl.warn{color:var(--vscode-terminal-ansiYellow,var(--vscode-editorWarning-foreground));}
+  #out .lvl.tx{color:var(--vscode-terminal-ansiCyan,var(--vscode-textLink-foreground));}
+  #out .lvl.debug{color:var(--vscode-descriptionForeground);opacity:0.7;}
+  #out .lvl.info{color:var(--vscode-terminal-ansiGreen,#3FB950);}
+  #out .lvl.meta{color:var(--vscode-descriptionForeground);}
+  #bar{display:flex;border-top:1px solid var(--vscode-panel-border);padding:4px 6px;}
+  #in{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);padding:4px 6px;font-family:inherit;font-size:inherit;}
+  #in:focus{outline:1px solid var(--vscode-focusBorder);}
+</style>
+</head>
+<body>
+<div id="out"></div>
+<div id="bar"><input id="in" placeholder="Type a command, Enter to send..." autocomplete="off" spellcheck="false" /></div>
+<script nonce="${nonce}">
+  var out=document.getElementById('out');
+  var input=document.getElementById('in');
+  var vscode=acquireVsCodeApi();
+  var LOCAL_ECHO=${localEcho};
+  var lineBuf='';
+  function nearBottom(){return out.scrollHeight-out.scrollTop-out.clientHeight<40;}
+  var RE_ERR=${RE_ERR};
+  var RE_WARN=${RE_WARN};
+  var RE_DEBUG=${RE_DEBUG};
+  var RE_INFO=${RE_INFO};
+  var RE_TX=${RE_TX};
+  function levelOf(line){
+    if(RE_TX.test(line))return 'tx';
+    if(RE_ERR.test(line))return 'err';
+    if(RE_WARN.test(line))return 'warn';
+    if(RE_DEBUG.test(line))return 'debug';
+    if(RE_INFO.test(line))return 'info';
+    return '';
+  }
+  function renderLine(line,fb){
+    var lvl=levelOf(line)||fb||'';
+    var div=document.createElement('div');
+    div.className='lvl'+(lvl?(' '+lvl):'');
+    div.appendChild(document.createTextNode(line));
+    out.appendChild(div);
+  }
+  function append(text,cls){
+    lineBuf+=text;
+    var fb=cls||'';
+    var stick=nearBottom();
+    var idx;
+    while((idx=lineBuf.indexOf('\\n'))>=0){
+      renderLine(lineBuf.slice(0,idx).replace(${RE_TRAIL},''),fb);
+      lineBuf=lineBuf.slice(idx+1);
+    }
+    while(out.childNodes.length>5000){out.removeChild(out.firstChild);}
+    if(stick){out.scrollTop=out.scrollHeight;}
+  }
+  window.addEventListener('message',function(e){
+    var m=e.data;
+    if(m.type==='append'){append(m.text,m.cls);}
+    else if(m.type==='clear'){out.textContent='';lineBuf='';}
+  });
+  input.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){
+      var text=input.value;
+      vscode.postMessage({type:'input',text:text});
+      if(LOCAL_ECHO&&text.length){append(text+'\\n','tx');}
+      input.value='';
+      e.preventDefault();
+    }
+  });
+  input.focus();
+</script>
+</body>
+</html>`;
+  }
+}
+
+let rttView: RttMonitorViewProvider | undefined;
+
+/** Stream raw device bytes to the RTT monitor. */
+function rttRaw(data: string): void {
+  rttView?.append(data);
+}
+
+/** Write a status line to the RTT monitor, ensuring a trailing newline. */
+function rttLine(line: string): void {
+  rttView?.append(line.endsWith('\n') ? line : line + '\n', 'meta');
+}
+
+/** Reveal the RTT monitor panel tab. */
+function showRttMonitor(): void {
+  void vscode.commands.executeCommand(`${RttMonitorViewProvider.viewType}.focus`);
+}
 
 // Captured in activate so the helpers below can resolve the bundled binary and
 // the log path without threading the context through every call site.
@@ -50,10 +209,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const device = config.get<string>('device', 'Cortex-M0+');
   const speed = config.get<number>('speed', 4000);
 
-  output = vscode.window.createOutputChannel(RTT_OUTPUT_NAME);
-  context.subscriptions.push(output);
-
   provider = new RttProvider(binary, serverArgs, '', pollMs, device, speed, logFileDefault);
+
+  rttView = new RttMonitorViewProvider();
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      RttMonitorViewProvider.viewType,
+      rttView,
+      { webviewOptions: { retainContextWhenHidden: true } },
+    ),
+  );
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = 'rtt-mcp.showMenu';
@@ -72,7 +237,8 @@ export function activate(context: vscode.ExtensionContext): void {
     register('rtt-mcp.status', () => statusCmd()),
     register('rtt-mcp.clear', () => clearCmd()),
     register('rtt-mcp.toggleMonitor', () => toggleMonitorCmd()),
-    register('rtt-mcp.openOutput', () => output.show(true)),
+    register('rtt-mcp.openOutput', () => showRttMonitor()),
+    register('rtt-mcp.clearMonitor', () => rttView?.clear()),
     register('rtt-mcp.openLog', () => openLogCmd()),
     register('rtt-mcp.reset', () => resetCmd()),
     register('rtt-mcp.setDevice', () => setDeviceCmd()),
@@ -244,11 +410,11 @@ async function showMenu(): Promise<void> {
     { label: '$(debug-disconnect) Disconnect', description: 'Close J-Link (service stays warm)', cmd: 'rtt-mcp.disconnect' },
     { label: '$(arrow-down) Read Accumulated Data', description: 'Pull current RTT buffer', cmd: 'rtt-mcp.read' },
     { label: '$(arrow-up) Write to Down-buffer', description: 'Send a string to the device', cmd: 'rtt-mcp.write' },
-    { label: '$(eye) Toggle Continuous Monitor', description: 'Stream RTT data to output channel', cmd: 'rtt-mcp.toggleMonitor' },
+    { label: '$(eye) Toggle Continuous Monitor', description: 'Stream RTT data to the RTT monitor', cmd: 'rtt-mcp.toggleMonitor' },
     { label: '$(list-unordered) List J-Link Devices', cmd: 'rtt-mcp.listDevices' },
     { label: '$(info) Show Status', cmd: 'rtt-mcp.status' },
     { label: '$(trash) Clear Ring Buffer', cmd: 'rtt-mcp.clear' },
-    { label: '$(output) Show RTT Output', cmd: 'rtt-mcp.openOutput' },
+    { label: '$(output) Show RTT Monitor', cmd: 'rtt-mcp.openOutput' },
     { label: '$(file-text) Open RTT Log File', cmd: 'rtt-mcp.openLog' },
     { label: '$(refresh) Reset Extension', description: 'Recreate status bar + provider (recovery)', cmd: 'rtt-mcp.reset' },
     { label: '$(chip) Set Target Device', description: `Current: ${provider.deviceName}`, cmd: 'rtt-mcp.setDevice' },
@@ -260,7 +426,7 @@ async function showMenu(): Promise<void> {
 }
 
 async function connectCmd(): Promise<void> {
-  output.show(true);
+  showRttMonitor();
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'RTT', cancellable: false },
     async (progress) => {
@@ -270,7 +436,7 @@ async function connectCmd(): Promise<void> {
         const cfg = vscode.workspace.getConfiguration('rtt-mcp');
         const url = cfg.get<string>('daemonUrl', DAEMON_URL_DEFAULT);
         const fail = `RTT service failed to start at ${url}`;
-        output.appendLine(`[${ts()}] [RTT ERROR] ${fail}`);
+        rttLine(`[${ts()}] [RTT ERROR] ${fail}`);
         vscode.window.showErrorMessage(fail);
         return;
       }
@@ -278,7 +444,7 @@ async function connectCmd(): Promise<void> {
       try {
         const result = await provider.connect({
           onStatus: (msg) => {
-            output.appendLine(`[${ts()}] [RTT] ${msg}`);
+            rttLine(`[${ts()}] [RTT] ${msg}`);
             progress.report({ message: msg });
           },
         });
@@ -286,18 +452,18 @@ async function connectCmd(): Promise<void> {
           .filter((c) => c.type === 'text')
           .map((c) => c.text)
           .join('\n');
-        output.appendLine(`[${ts()}] [RTT] ${text}`);
+        rttLine(`[${ts()}] [RTT] ${text}`);
 
         // Auto-start monitor after successful connect
         provider.startMonitor({
-          onData: (data) => output.append(data),
-          onError: (err) => output.appendLine(`[${ts()}] [RTT Monitor Error] ${err.message}`),
+          onData: (data) => rttRaw(data),
+          onError: (err) => rttLine(`[${ts()}] [RTT Monitor Error] ${err.message}`),
         });
-        output.appendLine(`[${ts()}] [RTT] Monitor started`);
+        rttLine(`[${ts()}] [RTT] Monitor started`);
         vscode.window.showInformationMessage(text || 'RTT connected & monitoring');
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        output.appendLine(`[${ts()}] [RTT ERROR] ${msg}`);
+        rttLine(`[${ts()}] [RTT ERROR] ${msg}`);
         vscode.window.showErrorMessage(`RTT connect failed: ${msg}`);
       }
     },
@@ -307,7 +473,7 @@ async function connectCmd(): Promise<void> {
 
 async function disconnectCmd(): Promise<void> {
   await provider.disconnect();
-  output.appendLine(`[${ts()}] [RTT] Disconnected`);
+  rttLine(`[${ts()}] [RTT] Disconnected`);
   vscode.window.showInformationMessage('RTT disconnected');
   updateStatusBar();
 }
@@ -319,8 +485,8 @@ async function readCmd(): Promise<void> {
   }
   try {
     const text = await provider.read();
-    output.append(text);
-    output.show(true);
+    rttRaw(text);
+    showRttMonitor();
   } catch (e) {
     vscode.window.showErrorMessage(`RTT read failed: ${(e as Error).message}`);
   }
@@ -339,7 +505,7 @@ async function writeCmd(): Promise<void> {
   try {
     const result = await provider.write(data);
     vscode.window.showInformationMessage(result);
-    output.appendLine(`[${ts()}] [RTT TX] ${data}`);
+    rttLine(`[${ts()}] [RTT TX] ${data}`);
   } catch (e) {
     vscode.window.showErrorMessage(`RTT write failed: ${(e as Error).message}`);
   }
@@ -357,8 +523,8 @@ async function listDevicesCmd(): Promise<void> {
   }
   try {
     const text = await provider.listDevices();
-    output.appendLine(`[${ts()}] [RTT] ${text}`);
-    output.show(true);
+    rttLine(`[${ts()}] [RTT] ${text}`);
+    showRttMonitor();
   } catch (e) {
     vscode.window.showErrorMessage(`RTT list devices failed: ${(e as Error).message}`);
   }
@@ -371,8 +537,8 @@ async function statusCmd(): Promise<void> {
   }
   try {
     const text = await provider.status();
-    output.appendLine(`[${ts()}] [RTT Status]\n${text}`);
-    output.show(true);
+    rttLine(`[${ts()}] [RTT Status]\n${text}`);
+    showRttMonitor();
   } catch (e) {
     vscode.window.showErrorMessage(`RTT status failed: ${(e as Error).message}`);
   }
@@ -384,13 +550,13 @@ async function clearCmd(): Promise<void> {
     return;
   }
   await provider.clear();
-  output.appendLine(`[${ts()}] [RTT] Buffer cleared`);
+  rttLine(`[${ts()}] [RTT] Buffer cleared`);
 }
 
 async function toggleMonitorCmd(): Promise<void> {
   if (provider.isMonitoring) {
     provider.stopMonitor();
-    output.appendLine(`[${ts()}] [RTT] Monitor stopped`);
+    rttLine(`[${ts()}] [RTT] Monitor stopped`);
     vscode.window.showInformationMessage('RTT monitor stopped');
   } else {
     if (!provider.isConnected) {
@@ -398,12 +564,12 @@ async function toggleMonitorCmd(): Promise<void> {
       return;
     }
     provider.startMonitor({
-      onData: (text) => output.append(text),
-      onError: (err) => output.appendLine(`[${ts()}] [RTT Monitor Error] ${err.message}`),
+      onData: (text) => rttRaw(text),
+      onError: (err) => rttLine(`[${ts()}] [RTT Monitor Error] ${err.message}`),
     });
-    output.appendLine(`[${ts()}] [RTT] Monitor started`);
-    output.show(true);
-    vscode.window.showInformationMessage('RTT monitor started - output streaming to "RTT" channel');
+    rttLine(`[${ts()}] [RTT] Monitor started`);
+    showRttMonitor();
+    vscode.window.showInformationMessage('RTT monitor started - output streaming to the "RTT" monitor panel');
   }
   updateStatusBar();
 }
@@ -435,14 +601,14 @@ async function resetCmd(): Promise<void> {
     logFileDefault,
   );
   updateStatusBar();
-  output.appendLine(`[${ts()}] [RTT] Extension reset`);
+  rttLine(`[${ts()}] [RTT] Extension reset`);
   vscode.window.showInformationMessage('RTT extension reset');
 }
 
 async function setDeviceCmd(): Promise<void> {
   const cfg = vscode.workspace.getConfiguration('rtt-mcp');
   const current = cfg.get<string>('device', 'Cortex-M0+');
-  output.show(true);
+  showRttMonitor();
 
   // Load the live J-Link device database (probe-less; enumerates every device,
   // so ~1-2s). Needs the shared daemon up — start it if necessary. Falls back to
@@ -456,7 +622,7 @@ async function setDeviceCmd(): Promise<void> {
       );
     }
   } catch (e) {
-    output.appendLine(`[${ts()}] [RTT] Could not load device list: ${(e as Error).message}`);
+    rttLine(`[${ts()}] [RTT] Could not load device list: ${(e as Error).message}`);
   }
 
   // Generic ARM cores are always valid in J-Link and suffice for RTT (SWD+RAM).
@@ -527,7 +693,7 @@ async function setDeviceCmd(): Promise<void> {
   if (dev === current) return;
   await cfg.update('device', dev, vscode.ConfigurationTarget.Workspace);
   vscode.window.showInformationMessage(`RTT target device set to '${dev}'. Reconnect to apply.`);
-  output.appendLine(`[${ts()}] [RTT] Target device changed: ${current} → ${dev}`);
+  rttLine(`[${ts()}] [RTT] Target device changed: ${current} → ${dev}`);
 }
 
 function updateStatusBar(): void {

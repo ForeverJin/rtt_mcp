@@ -75,8 +75,14 @@
       },
       {
         "command": "rtt-mcp.openOutput",
-        "title": "RTT: Show Output Channel",
+        "title": "RTT: Show RTT Monitor",
         "category": "RTT"
+      },
+      {
+        "command": "rtt-mcp.clearMonitor",
+        "title": "RTT: Clear Monitor",
+        "category": "RTT",
+        "icon": "$(trash)"
       },
       {
         "command": "rtt-mcp.openLog",
@@ -94,6 +100,33 @@
         "category": "RTT"
       }
     ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "rtt-mcp",
+          "title": "RTT",
+          "icon": "media/rtt-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "rtt-mcp": [
+        {
+          "id": "rtt-mcp.rttMonitor",
+          "name": "RTT Monitor",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "rtt-mcp.clearMonitor",
+          "when": "view == 'rtt-mcp.rttMonitor'",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "RTT MCP",
       "properties": {
@@ -125,6 +158,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically connect to J-Link when the extension activates"
+        },
+        "rtt-mcp.localEcho": {
+          "type": "boolean",
+          "default": true,
+          "description": "Echo characters typed in the RTT terminal locally. Keep on if your firmware does not echo input; turn off if it does (to avoid doubled characters)."
         },
         "rtt-mcp.device": {
           "type": "string",

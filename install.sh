@@ -43,17 +43,25 @@ info "Console script: $bin"
 if $PYTHON -c "import pylink; pylink.JLink()" 2>/dev/null; then info "pylink-square import OK"
 else warn "pylink import failed — install SEGGER J-Link software before connecting hardware"; fi
 
-# --- Step 5: VSCode extension (best-effort) ---
-vsix="$(dirname "$0")/vscode-rtt-mcp/vscode-rtt-mcp-0.1.0.vsix"
-if command -v code >/dev/null 2>&1 && [ -f "$vsix" ]; then
-  info "Installing VSCode extension..."
-  code --uninstall-extension local.vscode-rtt-mcp >/dev/null 2>&1 || true
-  code --install-extension "$vsix" --force >/dev/null 2>&1 || warn "code --install-extension failed"
-  info "Extension installed (reload VSCode to activate)"
+# --- Step 5: VSCode extension (build + install) ---
+# Build the .vsix on-demand from source so we never ship a stale package
+# missing the Go daemon binary (vscode-rtt-mcp/build.sh handles that).
+ext_dir="$(dirname "$0")/vscode-rtt-mcp"
+build_sh="$ext_dir/build.sh"
+if command -v code >/dev/null 2>&1 && [ -x "$build_sh" ]; then
+  info "Building VSCode extension (Go binary + vsix)..."
+  if vsix_file=$("$build_sh" 2>/dev/null | grep -E '\.vsix$' | tail -1) && [ -n "$vsix_file" ] && [ -f "$ext_dir/$vsix_file" ]; then
+    info "Installing $vsix_file..."
+    code --uninstall-extension local.vscode-rtt-mcp >/dev/null 2>&1 || true
+    code --install-extension "$ext_dir/$vsix_file" --force >/dev/null 2>&1 || warn "code --install-extension failed"
+    info "Extension installed (reload VSCode to activate)"
+  else
+    warn "Extension build did not produce a .vsix — run $build_sh manually to see the error"
+  fi
 elif ! command -v code >/dev/null 2>&1; then
-  warn "\`code\` CLI not found — install the extension manually: drag $vsix into VSCode's Extensions panel"
+  warn "\`code\` CLI not found — run $build_sh manually then drag the .vsix into VSCode's Extensions panel"
 else
-  warn "VSIX not found at $vsix — build it first with \`vsce package\` in vscode-rtt-mcp/"
+  warn "Build script missing at $build_sh — extension will not be installed"
 fi
 
 # --- Step 6: register MCP at Claude Code user scope ---

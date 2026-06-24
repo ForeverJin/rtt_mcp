@@ -76,7 +76,26 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
   }
 
   private html(): string {
-    const localEcho = vscode.workspace.getConfiguration('rtt-mcp').get<boolean>('localEcho', true);
+    const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+    const localEcho = cfg.get<boolean>('localEcho', true);
+    // User-overridable log colors. Empty falls back to the active theme via CSS
+    // var(). Sanitize to keep the value out of CSS structure (no ;{}<>), so a
+    // malformed setting can't break the stylesheet or the webview.
+    const color = (key: string, fallback: string): string => {
+      const v = cfg.get<string>(key, '').replace(/[;{}<>]/g, '').trim();
+      return v || fallback;
+    };
+    const cErr   = color('color.err',   'var(--vscode-terminal-ansiRed,var(--vscode-errorForeground))');
+    const cWarn  = color('color.warn',  'var(--vscode-terminal-ansiYellow,var(--vscode-editorWarning-foreground))');
+    const cTx    = color('color.tx',    'var(--vscode-terminal-ansiCyan,var(--vscode-textLink-foreground))');
+    const cDebug = color('color.debug', 'var(--vscode-descriptionForeground)');
+    const cInfo  = color('color.info',  'var(--vscode-terminal-ansiGreen,#3FB950)');
+    const cMeta  = color('color.meta',  'var(--vscode-descriptionForeground)');
+    // User-overridable font. Empty/0 falls back to the VSCode terminal font.
+    const fFamily = cfg.get<string>('fontFamily', '').replace(/[;{}<>]/g, '').trim();
+    const fSize   = cfg.get<number>('fontSize', 0);
+    const fontFamily = fFamily || "var(--vscode-terminal-font-family),Consolas,'Courier New',monospace";
+    const fontSize   = fSize > 0 ? `${fSize}px` : "var(--vscode-terminal-font-size,var(--vscode-editor-font-size,13px))";
     const nonce = crypto.randomBytes(16).toString('base64');
     // Defined as real regex literals here (correctly escaped) and interpolated into
     // the webview below via ${}. Writing them inline inside the template mangles the
@@ -94,15 +113,15 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'">
 <style>
   html,body{height:100%;margin:0;}
-  body{display:flex;flex-direction:column;background:var(--vscode-editor-background);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family),Consolas,monospace;font-size:var(--vscode-editor-font-size,13px);}
+  body{display:flex;flex-direction:column;background:var(--vscode-editor-background);color:var(--vscode-editor-foreground);font-family:${fontFamily};font-size:${fontSize};}
   #out{flex:1;overflow-y:auto;padding:6px 8px;}
   #out .lvl{white-space:pre-wrap;word-break:break-word;}
-  #out .lvl.err{color:var(--vscode-terminal-ansiRed,var(--vscode-errorForeground));}
-  #out .lvl.warn{color:var(--vscode-terminal-ansiYellow,var(--vscode-editorWarning-foreground));}
-  #out .lvl.tx{color:var(--vscode-terminal-ansiCyan,var(--vscode-textLink-foreground));}
-  #out .lvl.debug{color:var(--vscode-descriptionForeground);opacity:0.7;}
-  #out .lvl.info{color:var(--vscode-terminal-ansiGreen,#3FB950);}
-  #out .lvl.meta{color:var(--vscode-descriptionForeground);}
+  #out .lvl.err{color:${cErr};}
+  #out .lvl.warn{color:${cWarn};}
+  #out .lvl.tx{color:${cTx};}
+  #out .lvl.debug{color:${cDebug};opacity:0.7;}
+  #out .lvl.info{color:${cInfo};}
+  #out .lvl.meta{color:${cMeta};}
   #bar{display:flex;border-top:1px solid var(--vscode-panel-border);padding:4px 6px;}
   #in{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);padding:4px 6px;font-family:inherit;font-size:inherit;}
   #in:focus{outline:1px solid var(--vscode-focusBorder);}

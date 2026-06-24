@@ -190,6 +190,48 @@
           "type": "string",
           "default": "0x20000",
           "description": "RAM window size in bytes (hex) for the RTT control-block scan. Default suits HC32L19x (128KB); override for other MCUs (e.g. STM32F103: 0x5000)"
+        },
+        "rtt-mcp.color.err": {
+          "type": "string",
+          "default": "",
+          "description": "Color for error/fatal log lines. Any CSS color value (e.g. #FF0000, red, var(--vscode-errorForeground)). Leave empty to follow the active theme."
+        },
+        "rtt-mcp.color.warn": {
+          "type": "string",
+          "default": "",
+          "description": "Color for warning log lines. Any CSS color value; empty follows the active theme."
+        },
+        "rtt-mcp.color.tx": {
+          "type": "string",
+          "default": "",
+          "description": "Color for [RTT TX] (host-to-device) echo lines. Any CSS color value; empty follows the active theme."
+        },
+        "rtt-mcp.color.debug": {
+          "type": "string",
+          "default": "",
+          "description": "Color for debug/trace log lines. Any CSS color value; empty follows the active theme."
+        },
+        "rtt-mcp.color.info": {
+          "type": "string",
+          "default": "",
+          "description": "Color for info log lines. Any CSS color value; empty follows the active theme."
+        },
+        "rtt-mcp.color.meta": {
+          "type": "string",
+          "default": "",
+          "description": "Color for status/connection lines. Any CSS color value; empty follows the active theme."
+        },
+        "rtt-mcp.fontFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Font family for the RTT log panel (e.g. 'Cascadia Code', 'Consolas', 'Menlo'). Leave empty to follow the VSCode terminal font (terminal.integrated.fontFamily)."
+        },
+        "rtt-mcp.fontSize": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Font size in pixels for the RTT log panel. Set to 0 to follow the VSCode terminal font size (terminal.integrated.fontSize)."
         }
       }
     }

@@ -56,6 +56,13 @@ export class McpClient {
     private readonly command: string,
     private readonly args: string[],
     private readonly cwd: string,
+    /**
+     * Extra environment variables merged into the child process env. The child
+     * always inherits process.env as a base; this object overrides / adds keys.
+     * Used by the integration test to inject RTT_MOCK=1 without leaking to the
+     * test runner's own process.env.
+     */
+    private readonly env: NodeJS.ProcessEnv = {},
   ) {}
 
   get initialized(): boolean {
@@ -73,6 +80,7 @@ export class McpClient {
 
     this.proc = spawn(this.command, this.args, {
       cwd: this.cwd || undefined,
+      env: { ...process.env, ...this.env },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       windowsVerbatimArguments: false,

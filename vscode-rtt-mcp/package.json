@@ -239,8 +239,8 @@
   "scripts": {
     "build": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "test": "npm run build && node --test test/integration.test.js",
-    "mock": "python test/mock_server.py",
+    "build:go": "go build -C ../go -o bin/rtt-mcp-server .",
+    "test": "npm run build:go && npm run build && node --test test/integration.test.js",
     "package": "vsce package"
   },
   "devDependencies": {

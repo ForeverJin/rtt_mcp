@@ -1,16 +1,3 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-
 # IDE
 .idea/
 .vscode/
@@ -22,6 +9,11 @@ rtt_output.log
 
 # Environment
 .env
+
+# Generic build output (Go / hatch / tsc)
+dist/
+build/
+bin/
 
 # Node.js (vscode-rtt-mcp)
 node_modules/

@@ -118,15 +118,28 @@ type writeIn struct {
 
 func handleConnect(ctx context.Context, req *mcp.CallToolRequest, in connectIn) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
-	if c.IsConnected() {
-		st := c.Status()
-		return text(fmt.Sprintf(
-			"Already connected to J-Link device '%s' (serial: %s, speed: %d kHz)\nRTT monitoring active on channel %d (shared connection)",
-			st.DeviceName, st.Serial, st.Speed, st.Channel)), nil, nil
-	}
+	defer c.TouchIdle() // refresh idle watchdog on any connect attempt that keeps the probe held
 	serial := derefStr(in.Serial)
 	device := derefStr(in.Device)
 	speed := derefInt(in.Speed)
+
+	// If already connected and the caller passed any parameter that conflicts
+	// with the live connection, force a reconnect so the new value actually
+	// takes effect. Empty / zero means "leave alone" (use default).
+	if c.IsConnected() {
+		st := c.Status()
+		conflict := (device != "" && device != st.DeviceName) ||
+			(speed != 0 && speed != st.Speed) ||
+			(serial != "" && serial != st.Serial)
+		if !conflict {
+			return text(fmt.Sprintf(
+				"Already connected to J-Link device '%s' (serial: %s, speed: %d kHz)\nRTT monitoring active on channel %d (shared connection)",
+				st.DeviceName, st.Serial, st.Speed, st.Channel)), nil, nil
+		}
+		// Reconnect to honor the new parameters.
+		c.Disconnect()
+	}
+
 	if err := c.Connect(serial, device, speed); err != nil {
 		return text("Failed to connect to J-Link.\n\nError:\n" + err.Error()), nil, nil
 	}
@@ -138,6 +151,7 @@ func handleConnect(ctx context.Context, req *mcp.CallToolRequest, in connectIn) 
 
 func handleDisconnect(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
+	// No TouchIdle: this releases the probe; the watchdog is stopped by Disconnect itself.
 	if !c.IsConnected() {
 		return text("J-Link is not connected."), nil, nil
 	}
@@ -147,6 +161,7 @@ func handleDisconnect(ctx context.Context, req *mcp.CallToolRequest, in struct{}
 
 func handleRead(ctx context.Context, req *mcp.CallToolRequest, in readIn) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
+	defer c.TouchIdle()
 	if !c.IsConnected() {
 		return text("J-Link is not connected. Call jlink_connect first."), nil, nil
 	}
@@ -159,6 +174,7 @@ func handleRead(ctx context.Context, req *mcp.CallToolRequest, in readIn) (*mcp.
 
 func handleReadLog(ctx context.Context, req *mcp.CallToolRequest, in readLogIn) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
+	defer c.TouchIdle()
 	data := c.ReadLogTail(derefInt(in.MaxBytes))
 	if data == "" {
 		return text("(no RTT log yet — connect first)"), nil, nil
@@ -168,6 +184,7 @@ func handleReadLog(ctx context.Context, req *mcp.CallToolRequest, in readLogIn) 
 
 func handleReadRaw(ctx context.Context, req *mcp.CallToolRequest, in readRawIn) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
+	defer c.TouchIdle()
 	var offset int64
 	if in.Offset != nil {
 		offset = *in.Offset
@@ -179,6 +196,7 @@ func handleReadRaw(ctx context.Context, req *mcp.CallToolRequest, in readRawIn) 
 
 func handleWrite(ctx context.Context, req *mcp.CallToolRequest, in writeIn) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
+	defer c.TouchIdle()
 	if !c.IsConnected() {
 		return text("J-Link is not connected. Call jlink_connect first."), nil, nil
 	}
@@ -265,6 +283,7 @@ func handleCheckDevice(ctx context.Context, req *mcp.CallToolRequest, in checkDe
 
 func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
+	defer c.TouchIdle()
 	if !c.IsConnected() {
 		return text("J-Link is not connected."), nil, nil
 	}
@@ -282,6 +301,7 @@ func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*
 
 func handleClear(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
+	defer c.TouchIdle()
 	if !c.IsConnected() {
 		return text("J-Link is not connected. Call jlink_connect first."), nil, nil
 	}

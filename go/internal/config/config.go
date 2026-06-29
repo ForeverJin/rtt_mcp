@@ -25,6 +25,7 @@ type Config struct {
 	DaemonURL      string // RTT_DAEMON_URL (default http://127.0.0.1:8765/sse)
 	AuthToken      string // RTT_AUTH_TOKEN (empty → auth disabled)
 	LibPath        string // JLINK_LIB_PATH / RTT_LIB_PATH (empty → auto-detect SEGGER lib)
+	IdleTimeoutSec int    // RTT_IDLE_TIMEOUT seconds (default 30); 0 disables auto-disconnect
 }
 
 // Load reads configuration from the environment, applying the documented
@@ -43,6 +44,7 @@ func Load() *Config {
 		DaemonURL:      envStr("RTT_DAEMON_URL", "http://127.0.0.1:8765/sse"),
 		AuthToken:      os.Getenv("RTT_AUTH_TOKEN"),
 		LibPath:        firstNonEmpty(os.Getenv("JLINK_LIB_PATH"), os.Getenv("RTT_LIB_PATH")),
+		IdleTimeoutSec: envInt("RTT_IDLE_TIMEOUT", 30),
 	}
 }
 

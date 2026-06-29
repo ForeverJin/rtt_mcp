@@ -2,7 +2,7 @@
   "name": "vscode-rtt-mcp",
   "displayName": "RTT MCP Quick Access",
   "description": "Quick access to mcp-rtt-server (J-Link RTT) tools via status bar and command palette",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -137,7 +137,9 @@
         },
         "rtt-mcp.serverArgs": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
             "bridge"
           ],
@@ -158,6 +160,11 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically connect to J-Link when the extension activates"
+        },
+        "rtt-mcp.autoMonitor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-stream the shared RTT broadcast log (rtt_output.log) to the panel WITHOUT owning the J-Link. The panel lights up whenever an agent (or anything) drives the daemon to write output — no manual 'Connect to J-Link' needed. Paused while a manual Connect owns the probe."
         },
         "rtt-mcp.localEcho": {
           "type": "boolean",
@@ -246,6 +253,7 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
     "typescript": "^5.4.0"
   }
 }

@@ -13,6 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { RttProvider } from './rttProvider';
+import { RttLogTail } from './logTail';
 
 /** Format current time as [HH:MM:SS.mmm] for log output. */
 function ts(): string {
@@ -27,6 +28,15 @@ function ts(): string {
 let provider: RttProvider;
 let statusBar: vscode.StatusBarItem;
 let disposables: vscode.Disposable[] = [];
+
+// Read-only tail of the daemon broadcast log (rtt_output.log). Streams device
+// output to the panel WITHOUT owning the J-Link, so the panel lights up on
+// agent activity with no manual Connect and no probe contention. Mutually
+// exclusive with provider.startMonitor (connect stops it, disconnect resumes).
+let logTail: RttLogTail | undefined;
+// True while the tail has seen data within the last ~2s (data actively flowing).
+// Drives the status bar dot: streaming -> ●, armed-but-idle -> radio-tower.
+let logTailStreaming = false;
 
 // Dedicated "RTT" panel — a webview view in the bottom panel (its own tab, like
 // the MS Serial Monitor), with a scrolling output area and an input box. This
@@ -207,6 +217,37 @@ function showRttMonitor(): void {
   void vscode.commands.executeCommand(`${RttMonitorViewProvider.viewType}.focus`);
 }
 
+/**
+ * Start (or restart) the shared-log tail that feeds the panel without owning
+ * the J-Link. When an agent (or anything) drives the daemon to write RTT
+ * output, the panel lights up on its own. onFirstData focuses the panel the
+ * first time data arrives after start, mirroring the "panel lights up" feel of
+ * a manual Connect.
+ */
+function startLogTail(): void {
+  stopLogTail();
+  const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+  logTail = new RttLogTail(
+    logFileDefault,
+    cfg.get<number>('pollIntervalMs', 300),
+    {
+      onData: (text) => rttRaw(text),
+      onFirstData: () => showRttMonitor(),
+      onStreamState: (s) => { logTailStreaming = s; updateStatusBar(); },
+      onError: (err) => rttLine(`[${ts()}] [RTT Monitor Error] ${err.message}`),
+    },
+  );
+  logTail.start();
+  updateStatusBar();
+}
+
+/** Stop the shared-log tail if running. */
+function stopLogTail(): void {
+  logTail?.stop();
+  logTail = undefined;
+  logTailStreaming = false;
+}
+
 // Captured in activate so the helpers below can resolve the bundled binary and
 // the log path without threading the context through every call site.
 let extensionCtx: vscode.ExtensionContext;
@@ -287,9 +328,18 @@ export function activate(context: vscode.ExtensionContext): void {
   } else {
     updateStatusBar();
   }
+
+  // Auto-monitor the shared broadcast log: when an agent (or anything) drives
+  // the daemon to write RTT output, the panel lights up on its own — no manual
+  // Connect, no J-Link ownership taken. Skipped when autoConnect owns the probe
+  // (connectCmd stops the tail and runs startMonitor instead).
+  if (config.get<boolean>('autoMonitor', true) && !config.get<boolean>('autoConnect', false)) {
+    startLogTail();
+  }
 }
 
 export function deactivate(): void {
+  stopLogTail();
   void provider?.shutdown();
   // Best-effort graceful teardown; deactivate is synchronous, so we can't await.
   void stopDaemon();
@@ -445,6 +495,7 @@ async function showMenu(): Promise<void> {
 }
 
 async function connectCmd(): Promise<void> {
+  stopLogTail(); // provider.startMonitor will own the panel; avoid double-write.
   showRttMonitor();
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'RTT', cancellable: false },
@@ -494,7 +545,10 @@ async function disconnectCmd(): Promise<void> {
   await provider.disconnect();
   rttLine(`[${ts()}] [RTT] Disconnected`);
   vscode.window.showInformationMessage('RTT disconnected');
-  updateStatusBar();
+  // Resume the shared-log tail so the panel keeps streaming agent activity.
+  const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+  if (cfg.get<boolean>('autoMonitor', true)) startLogTail();
+  else updateStatusBar();
 }
 
 async function readCmd(): Promise<void> {
@@ -719,8 +773,13 @@ function updateStatusBar(): void {
   if (!statusBar) return;
   statusBar.backgroundColor = undefined;
   if (!provider.isConnected) {
-    statusBar.text = '$(debug-disconnect) RTT';
-    statusBar.tooltip = 'RTT MCP - Disconnected (click to open menu)';
+    if (logTailStreaming) {
+      statusBar.text = '$(eye) RTT ●';
+      statusBar.tooltip = 'RTT MCP - Auto-streaming shared log (agent activity) - click to open menu';
+    } else {
+      statusBar.text = '$(debug-disconnect) RTT';
+      statusBar.tooltip = 'RTT MCP - Disconnected (click to open menu)';
+    }
   } else if (provider.isMonitoring) {
     statusBar.text = '$(eye) RTT ●';
     statusBar.tooltip = 'RTT MCP - Connected & monitoring (click to open menu)';

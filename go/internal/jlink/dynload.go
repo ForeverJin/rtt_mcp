@@ -37,11 +37,6 @@ func defaultLibCandidates() []string {
 			`JLinkARM.dll`,
 		)
 		return cands
-		return []string{
-			`C:\Program Files (x86)\SEGGER\JLink\JLinkARM.dll`,
-			`C:\Program Files\SEGGER\JLink\JLinkARM.dll`,
-			`JLinkARM.dll`,
-		}
 	case "darwin":
 		return []string{
 			"/Applications/SEGGER/JLink/libjlinkarm.dylib",

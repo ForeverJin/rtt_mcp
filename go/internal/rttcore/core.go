@@ -51,6 +51,12 @@ type Core struct {
 	serial     string // serial actually used
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
+
+	// Idle watchdog: releases the probe when no active tool call has touched
+	// it for idleTimeout. Disabled when idleTimeout == 0.
+	idleMu      sync.Mutex
+	idleTimer   *time.Timer
+	idleTimeout time.Duration
 }
 
 var (
@@ -127,7 +133,7 @@ func (c *Core) Connect(serial, device string, speed int) error {
 	c.backend.SetTifSWD()
 	var lastDevErr error
 	connected := false
-	for _, dev := range deviceCandidates(device) {
+	for _, dev := range deviceCandidates(device, c.backend.SupportedDeviceIndex) {
 		c.backend.SetSpeed(speed)
 		if err := c.backend.ConnectDevice(dev); err != nil {
 			lastDevErr = err
@@ -198,6 +204,10 @@ func (c *Core) Connect(serial, device string, speed int) error {
 	c.wg.Add(1)
 	go c.monitorLoop()
 
+	// 8. Arm the idle watchdog so the probe is released when no client uses it.
+	c.idleTimeout = time.Duration(c.cfg.IdleTimeoutSec) * time.Second
+	c.startIdleTimer()
+
 	fmt.Fprintf(os.Stderr, "[JLink] Connected (%s), RTT on channel %d\n", c.backend.ProductName(), c.cfg.Channel)
 	return nil
 }
@@ -205,6 +215,8 @@ func (c *Core) Connect(serial, device string, speed int) error {
 // Disconnect stops the monitor, flushes any partial line, closes the log, and
 // releases the probe. Idempotent.
 func (c *Core) Disconnect() {
+	// Stop the idle watchdog first so its fire callback can't race this call.
+	c.stopIdleTimer()
 	c.mu.Lock()
 	if !c.running {
 		c.mu.Unlock()
@@ -234,6 +246,46 @@ func (c *Core) Disconnect() {
 	c.backend.Close()
 	c.rttStarted = false
 	fmt.Fprintln(os.Stderr, "[JLink] Disconnected")
+}
+
+// TouchIdle resets the idle watchdog. Called by every "active" tool handler
+// (read/write/status/connect/disconnect) so the probe is released only when no
+// client has used it for idleTimeout. No-op when not connected or disabled.
+func (c *Core) TouchIdle() {
+	c.idleMu.Lock()
+	defer c.idleMu.Unlock()
+	if c.idleTimer != nil {
+		c.idleTimer.Reset(c.idleTimeout)
+	}
+}
+
+// startIdleTimer arms the idle watchdog after a successful Connect. On fire it
+// releases the probe (Disconnect) but leaves the daemon process running, so the
+// next jlink_connect reconnects. No-op when disabled.
+func (c *Core) startIdleTimer() {
+	c.idleMu.Lock()
+	defer c.idleMu.Unlock()
+	if c.idleTimeout <= 0 {
+		return
+	}
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+	}
+	c.idleTimer = time.AfterFunc(c.idleTimeout, func() {
+		fmt.Fprintln(os.Stderr, "[JLink] idle timeout — releasing probe (daemon stays up)")
+		c.Disconnect()
+	})
+}
+
+// stopIdleTimer disarms the watchdog (called from Disconnect to avoid racing an
+// in-flight fire callback).
+func (c *Core) stopIdleTimer() {
+	c.idleMu.Lock()
+	defer c.idleMu.Unlock()
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+		c.idleTimer = nil
+	}
 }
 
 // monitorLoop is the sole reader of the physical RTT up-buffer. It line-buffers
@@ -343,11 +395,30 @@ func (c *Core) findRTTAddress() int64 {
 	return -1
 }
 
-func deviceCandidates(device string) []string {
-	if device == "Cortex-M0+" {
-		return []string{"Cortex-M0+"}
+// deviceCandidates returns the list of device names to try, in order. Only
+// names that the loaded J-Link DLL recognises are included — names absent
+// from the device database are silently skipped so JLINKARM_ExecCommand never
+// gets handed an unknown string (which would pop a system dialog). Falls back
+// to "Cortex-M0+" only if the generic CPU is in the database.
+func deviceCandidates(device string, isValid func(string) int) []string {
+	var out []string
+	if device != "" && isValid(device) > 0 {
+		out = append(out, device)
 	}
-	return []string{device, "Cortex-M0+"}
+	if device != "Cortex-M0+" && isValid("Cortex-M0+") > 0 {
+		out = append(out, "Cortex-M0+")
+	}
+	if len(out) == 0 {
+		// Last resort: include whatever the user asked for so the caller
+		// surfaces a clear "device not supported" error instead of a silent
+		// empty list.
+		if device != "" {
+			out = append(out, device)
+		} else {
+			out = append(out, "Cortex-M0+")
+		}
+	}
+	return out
 }
 
 // Read drains and returns the in-memory ring, keeping the last maxBytes.

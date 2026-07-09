@@ -45,3 +45,25 @@ func TestUnescapeErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestAppendLineEnding(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want []byte
+	}{
+		{"empty stays empty", []byte{}, []byte{}},
+		{"bare command gets CRLF", []byte("AT"), []byte("AT\r\n")},
+		{"already CRLF is untouched", []byte("AT\r\n"), []byte("AT\r\n")},
+		{"bare LF is untouched", []byte("AT\n"), []byte("AT\n")},
+		{"bare CR is untouched", []byte("AT\r"), []byte("AT\r")},
+		{"binary trailing non-terminator gets CRLF", []byte{0x1b, '[', 'A'}, []byte{0x1b, '[', 'A', '\r', '\n'}},
+	}
+	for _, c := range cases {
+		got := appendLineEnding(append([]byte(nil), c.in...)) // copy to detect in-place mutation
+		if string(got) != string(c.want) {
+			t.Errorf("%s: appendLineEnding(%q) = %v (len %d), want %v (len %d)",
+				c.name, c.in, got, len(got), c.want, len(c.want))
+		}
+	}
+}

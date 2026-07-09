@@ -53,7 +53,7 @@ func Register(s *mcp.Server) {
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "rtt_write",
-			Description: "Write data to RTT down-buffer (host -> device). C-style escapes are interpreted so control bytes can be sent: \\r \\n \\t \\0 \\\\ and \\xNN (two hex digits) — e.g. pass AT\\r\\n to send 'AT' followed by CR/LF (4 bytes), not the 6 literal characters. A literal backslash is sent with \\\\. Unknown escapes are rejected. The target device must be running RTT with a down-buffer listener.",
+			Description: "Write data to RTT down-buffer (host -> device). C-style escapes are interpreted so control bytes can be sent: \\r \\n \\t \\0 \\\\ and \\xNN (two hex digits). If the data does not end with \\r or \\n, \\r\\n is appended automatically (matches the VSCode panel's webview input path) so a bare command like 'AT' reaches the device's line parser — pass a string already terminated to suppress. The target device must be running RTT with a down-buffer listener.",
 		}, handleWrite)
 
 	mcp.AddTool(s,
@@ -219,6 +219,7 @@ func handleWrite(ctx context.Context, req *mcp.CallToolRequest, in writeIn) (*mc
 	if in.Channel != nil {
 		channel = *in.Channel
 	}
+	raw = appendLineEnding(raw)
 	n := c.Write(channel, string(raw))
 	if n < 0 {
 		return text("Failed to write to RTT."), nil, nil
@@ -411,4 +412,22 @@ func hexVal(b byte) (int, bool) {
 		return int(b-'A') + 10, true
 	}
 	return 0, false
+}
+
+// appendLineEnding appends \r\n to raw unless it already ends with \r or \n,
+// so callers can pass a bare command like "AT" and have the device's line
+// parser process it. This mirrors the VSCode panel's webview send path
+// (extension.ts: provider.write(`${msg.text}\r\n`)) and resolves the
+// "MCP send → no reply" asymmetry where the panel auto-appended a terminator
+// but the MCP tool did not. Data already terminated is sent as-is, and empty
+// input is left empty.
+func appendLineEnding(raw []byte) []byte {
+	if len(raw) == 0 {
+		return raw
+	}
+	last := raw[len(raw)-1]
+	if last == '\r' || last == '\n' {
+		return raw
+	}
+	return append(raw, '\r', '\n')
 }

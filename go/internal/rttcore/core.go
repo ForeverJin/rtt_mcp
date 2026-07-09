@@ -7,6 +7,7 @@ package rttcore
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -44,13 +45,14 @@ type Core struct {
 	log        *logSink
 	lineMu     sync.Mutex // guards lineBuf during monitor flushes
 	lineBuf    string
-	running    bool
-	rttStarted bool
-	device     string // device actually connected (reported by Status)
-	speed      int    // speed actually used
-	serial     string // serial actually used
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
+	running       bool
+	connectedOnce bool // true after the first successful Connect; never cleared (drives lazy EnsureConnected)
+	rttStarted    bool
+	device        string // device actually connected (reported by Status)
+	speed         int    // speed actually used
+	serial        string // serial actually used
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
 
 	// Idle watchdog: releases the probe when no active tool call has touched
 	// it for idleTimeout. Disabled when idleTimeout == 0.
@@ -108,11 +110,51 @@ func (c *Core) IsConnected() bool {
 	return c.backend.Opened() && c.running
 }
 
+// errNeverConnected is returned by EnsureConnected when no prior Connect ever
+// succeeded, so read/write callers can tell the user to call jlink_connect.
+var errNeverConnected = errors.New("J-Link has never been connected; call jlink_connect first")
+
+// EnsureConnected transparently re-establishes the probe after the idle watchdog
+// released it, reusing the last successful connection parameters. It makes the
+// idle auto-disconnect invisible to read/write callers: a client that connected,
+// went idle, then issued a read/write is reconnected on demand instead of seeing
+// "J-Link is not connected". Returns nil when already connected (now or right
+// after a reconnect). If the probe was never connected, it returns
+// errNeverConnected so the caller surfaces a clear "call jlink_connect first".
+//
+// The actual reconnect is delegated to Connect, whose idempotency guard makes
+// concurrent wake-ups (two clients rousing from idle at once) collapse to a
+// single probe bring-up rather than double-opening the SEGGER handle.
+func (c *Core) EnsureConnected() error {
+	c.mu.Lock()
+	if c.backend.Opened() && c.running {
+		c.mu.Unlock()
+		return nil
+	}
+	once := c.connectedOnce
+	serial, device, speed := c.serial, c.device, c.speed
+	c.mu.Unlock()
+	if !once {
+		return errNeverConnected
+	}
+	return c.Connect(serial, device, speed)
+}
+
 // Connect runs the full probe bring-up: open → SWD → device connect → RTT
 // control-block discovery → start monitor. Returns nil on success.
 func (c *Core) Connect(serial, device string, speed int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Idempotent: two clients waking from idle at once may both call Connect; the
+	// loser must not double-open the SEGGER handle. (Also short-circuits an
+	// explicit jlink_connect racing a lazy EnsureConnected.)
+	if c.backend.Opened() && c.running {
+		return nil
+	}
+	// reconnect is true on every connect after the first; it keeps the broadcast
+	// log in append mode so transparent re-establishment preserves RTT history.
+	reconnect := c.connectedOnce
 
 	if device == "" {
 		device = c.cfg.Device
@@ -183,14 +225,21 @@ func (c *Core) Connect(serial, device string, speed int) error {
 		c.ingest(data)
 	}
 
-	// 6. (Re)open the broadcast log, truncating any prior content.
+	// 6. (Re)open the broadcast log. The first connect truncates prior content
+	// (mirrors Python's 'w' mode); a reconnect appends so transparent
+	// re-establishment after the idle watchdog does not wipe RTT history.
 	path, err := resolveLogPath(c.cfg.LogFile)
 	if err != nil {
 		c.backend.RTTStop()
 		c.backend.Close()
 		return fmt.Errorf("resolve log path: %w", err)
 	}
-	sink, err := openLog(path)
+	var sink *logSink
+	if reconnect {
+		sink, err = openLogAppend(path)
+	} else {
+		sink, err = openLog(path)
+	}
 	if err != nil {
 		c.backend.RTTStop()
 		c.backend.Close()
@@ -200,6 +249,7 @@ func (c *Core) Connect(serial, device string, speed int) error {
 
 	// 7. Start the monitor goroutine.
 	c.running = true
+	c.connectedOnce = true
 	c.stopCh = make(chan struct{})
 	c.wg.Add(1)
 	go c.monitorLoop()

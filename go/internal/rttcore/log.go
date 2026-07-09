@@ -80,6 +80,22 @@ func openLog(path string) (*logSink, error) {
 	return &logSink{path: path, f: f}, nil
 }
 
+// openLogAppend opens the log for appending, preserving prior content. Used on a
+// lazy reconnect (after the idle watchdog released the probe) so transparent
+// re-establishment does not wipe RTT history. The existing file size is tracked
+// so the rotation threshold keeps working.
+func openLogAppend(path string) (*logSink, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	var size int64
+	if info, err := f.Stat(); err == nil {
+		size = info.Size()
+	}
+	return &logSink{path: path, f: f, size: size}, nil
+}
+
 // write appends a stamped line and rotates when the file crosses logMaxSize,
 // replicating Python's _flush_line log handling.
 func (l *logSink) write(s string) {

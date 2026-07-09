@@ -53,7 +53,7 @@ func Register(s *mcp.Server) {
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "rtt_write",
-			Description: "Write data to RTT down-buffer (host -> device). The target device must be running RTT with a down-buffer listener.",
+			Description: "Write data to RTT down-buffer (host -> device). C-style escapes are interpreted so control bytes can be sent: \\r \\n \\t \\0 \\\\ and \\xNN (two hex digits) — e.g. pass AT\\r\\n to send 'AT' followed by CR/LF (4 bytes), not the 6 literal characters. A literal backslash is sent with \\\\. Unknown escapes are rejected. The target device must be running RTT with a down-buffer listener.",
 		}, handleWrite)
 
 	mcp.AddTool(s,
@@ -162,8 +162,11 @@ func handleDisconnect(ctx context.Context, req *mcp.CallToolRequest, in struct{}
 func handleRead(ctx context.Context, req *mcp.CallToolRequest, in readIn) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
 	defer c.TouchIdle()
-	if !c.IsConnected() {
-		return text("J-Link is not connected. Call jlink_connect first."), nil, nil
+	// Transparently re-establish the probe if the idle watchdog released it, so a
+	// read after an idle gap resumes the live stream instead of reporting "not
+	// connected".
+	if err := c.EnsureConnected(); err != nil {
+		return text(err.Error()), nil, nil
 	}
 	data := c.Read(derefInt(in.MaxBytes))
 	if data == "" {
@@ -197,17 +200,26 @@ func handleReadRaw(ctx context.Context, req *mcp.CallToolRequest, in readRawIn) 
 func handleWrite(ctx context.Context, req *mcp.CallToolRequest, in writeIn) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
 	defer c.TouchIdle()
-	if !c.IsConnected() {
-		return text("J-Link is not connected. Call jlink_connect first."), nil, nil
+	// Transparently re-establish the probe if the idle watchdog released it: a
+	// write that follows a successful connect must not fail with "not connected"
+	// just because the idle window elapsed. This is the fix for the connect→write
+	// state mismatch.
+	if err := c.EnsureConnected(); err != nil {
+		return text(err.Error()), nil, nil
 	}
 	if in.Data == nil || *in.Data == "" {
 		return text("No data provided to write."), nil, nil
+	}
+	raw, err := unescape(*in.Data)
+	if err != nil {
+		return text("Invalid escape in data: " + err.Error() +
+			"\nSupported: \\r \\n \\t \\0 \\\\ \\xNN"), nil, nil
 	}
 	channel := c.Config().Channel
 	if in.Channel != nil {
 		channel = *in.Channel
 	}
-	n := c.Write(channel, *in.Data)
+	n := c.Write(channel, string(raw))
 	if n < 0 {
 		return text("Failed to write to RTT."), nil, nil
 	}
@@ -284,8 +296,11 @@ func handleCheckDevice(ctx context.Context, req *mcp.CallToolRequest, in checkDe
 func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
 	defer c.TouchIdle()
-	if !c.IsConnected() {
-		return text("J-Link is not connected."), nil, nil
+	// Transparently re-establish the probe if the idle watchdog released it, so a
+	// status check after an idle gap reports a live connection instead of leaking
+	// the internal "idle-disconnected" state. Consistent with read/write/clear.
+	if err := c.EnsureConnected(); err != nil {
+		return text(err.Error()), nil, nil
 	}
 	st := c.Status()
 	return text(fmt.Sprintf(`J-Link Status:
@@ -302,8 +317,11 @@ func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*
 func handleClear(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
 	defer c.TouchIdle()
-	if !c.IsConnected() {
-		return text("J-Link is not connected. Call jlink_connect first."), nil, nil
+	// Transparently re-establish the probe if the idle watchdog released it, so a
+	// clear after an idle gap works instead of reporting "not connected". This
+	// keeps read/write/clear/status uniform: all four auto-reconnect on idle.
+	if err := c.EnsureConnected(); err != nil {
+		return text(err.Error()), nil, nil
 	}
 	c.Clear()
 	return text("RTT buffer cleared."), nil, nil
@@ -329,4 +347,68 @@ func derefInt(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// unescape interprets C-style escape sequences in s and returns the raw bytes.
+// Supported: \r \n \t \0 \\ \xNN (exactly two hex digits). Unknown or malformed
+// escapes return an error so a typo can't silently send the wrong bytes — a
+// literal backslash must be written as \\. This lets a caller send AT\r\n and
+// get 'A','T',CR,LF (4 bytes) instead of the 6 literal characters.
+func unescape(s string) ([]byte, error) {
+	b := []byte(s)
+	var out []byte
+	for i := 0; i < len(b); {
+		if b[i] != '\\' {
+			out = append(out, b[i])
+			i++
+			continue
+		}
+		if i+1 >= len(b) {
+			return nil, fmt.Errorf("dangling '\\' at end of input")
+		}
+		switch b[i+1] {
+		case 'r':
+			out = append(out, '\r')
+			i += 2
+		case 'n':
+			out = append(out, '\n')
+			i += 2
+		case 't':
+			out = append(out, '\t')
+			i += 2
+		case '0':
+			out = append(out, 0)
+			i += 2
+		case '\\':
+			out = append(out, '\\')
+			i += 2
+		case 'x':
+			if i+3 >= len(b) {
+				return nil, fmt.Errorf("\\x must be followed by exactly two hex digits")
+			}
+			hi, ok1 := hexVal(b[i+2])
+			lo, ok2 := hexVal(b[i+3])
+			if !ok1 || !ok2 {
+				return nil, fmt.Errorf("invalid hex digit in %q", s[i:i+4])
+			}
+			out = append(out, byte(hi<<4|lo))
+			i += 4
+		default:
+			return nil, fmt.Errorf("unknown escape sequence \\%c", b[i+1])
+		}
+	}
+	return out, nil
+}
+
+// hexVal maps an ASCII hex digit to its 0–15 value (ok=false if not hex).
+func hexVal(b byte) (int, bool) {
+	switch {
+	case b >= '0' && b <= '9':
+		return int(b - '0'), true
+	case b >= 'a' && b <= 'f':
+		return int(b-'a') + 10, true
+	case b >= 'A' && b <= 'F':
+		return int(b-'A') + 10, true
+	}
+	return 0, false
 }

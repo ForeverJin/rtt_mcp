@@ -2,7 +2,7 @@
   "name": "vscode-rtt-mcp",
   "displayName": "RTT MCP Quick Access",
   "description": "Quick access to mcp-rtt-server (J-Link RTT) tools via status bar and command palette",
-  "version": "0.2.6",
+  "version": "0.2.9",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -170,6 +170,17 @@
           "type": "boolean",
           "default": true,
           "description": "Echo characters typed in the RTT terminal locally. Keep on if your firmware does not echo input; turn off if it does (to avoid doubled characters)."
+        },
+        "rtt-mcp.sendLineEnding": {
+          "type": "string",
+          "enum": ["crlf", "lf", "cr"],
+          "default": "crlf",
+          "enumDescriptions": [
+            "CR+LF (\\r\\n) — typical for RTT/serial line input",
+            "LF (\\n)",
+            "CR (\\r)"
+          ],
+          "description": "Line ending appended when sending from the RTT terminal input box. The server forwards any input that already ends in a newline verbatim, so all three options take effect as-is. A live dropdown in the panel overrides this per session."
         },
         "rtt-mcp.device": {
           "type": "string",

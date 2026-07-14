@@ -80,7 +80,9 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
   private onMessage(m: unknown): void {
     const msg = m as { type?: string; text?: string };
     if (msg.type === 'input' && typeof msg.text === 'string' && provider.isConnected) {
-      void provider.write(`${msg.text}\r\n`).catch((e) =>
+      // The webview already appended the chosen line ending; write verbatim so
+      // the dropdown (CR+LF / LF / CR) is what actually reaches the device.
+      void provider.write(msg.text).catch((e) =>
         rttLine(`[RTT TX error] ${(e as Error).message}`));
     }
   }
@@ -88,6 +90,11 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
   private html(): string {
     const cfg = vscode.workspace.getConfiguration('rtt-mcp');
     const localEcho = cfg.get<boolean>('localEcho', true);
+    // Default line ending appended on send; the panel's dropdown overrides it
+    // live (the webview HTML is only regenerated on resolve). Validated so a
+    // malformed/garbage value can't inject script into the template below.
+    const endingRaw = cfg.get<string>('sendLineEnding', 'crlf');
+    const sendLineEnding = ['crlf', 'lf', 'cr'].includes(endingRaw) ? endingRaw : 'crlf';
     // User-overridable log colors. Empty falls back to the active theme via CSS
     // var(). Sanitize to keep the value out of CSS structure (no ;{}<>), so a
     // malformed setting can't break the stylesheet or the webview.
@@ -135,18 +142,36 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
   #bar{display:flex;border-top:1px solid var(--vscode-panel-border);padding:4px 6px;}
   #in{flex:1;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);padding:4px 6px;font-family:inherit;font-size:inherit;}
   #in:focus{outline:1px solid var(--vscode-focusBorder);}
+  #send{margin-left:6px;padding:4px 14px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:2px;font-family:inherit;font-size:inherit;cursor:pointer;white-space:nowrap;}
+  #send:hover{background:var(--vscode-button-hoverBackground);}
+  #send:active{background:var(--vscode-button-hoverBackground);}
+  #send:focus{outline:1px solid var(--vscode-focusBorder);}
+  #eol{background:var(--vscode-dropdown-background);color:var(--vscode-dropdown-foreground);border:1px solid var(--vscode-dropdown-border);padding:0 4px;font-family:inherit;font-size:inherit;margin-right:4px;}
+  #eol:focus{outline:1px solid var(--vscode-focusBorder);}
 </style>
 </head>
 <body>
 <div id="out"></div>
-<div id="bar"><input id="in" placeholder="Type a command, Enter to send..." autocomplete="off" spellcheck="false" /></div>
+<div id="bar"><select id="eol" title="Line ending appended on send"><option value="crlf">CR+LF</option><option value="lf">LF</option><option value="cr">CR</option></select><input id="in" placeholder="Type a command, press Enter or Send..." autocomplete="off" spellcheck="false" /><button id="send" type="button" title="Send (Enter)">Send</button></div>
 <script nonce="${nonce}">
   var out=document.getElementById('out');
   var input=document.getElementById('in');
   var vscode=acquireVsCodeApi();
   var LOCAL_ECHO=${localEcho};
+  // Line ending appended to each send. Default comes from rtt-mcp.sendLineEnding;
+  // the user's last dropdown choice is remembered for the session via webview state.
+  var DEFAULT_EOL=${JSON.stringify(sendLineEnding)};
+  var ENDINGS={crlf:'\\r\\n',lf:'\\n',cr:'\\r'};
+  var eol=document.getElementById('eol');
+  var savedEol=vscode.getState();
+  eol.value=(savedEol&&ENDINGS[savedEol.eol])?savedEol.eol:DEFAULT_EOL;
+  eol.addEventListener('change',function(){vscode.setState({eol:eol.value});});
   var lineBuf='';
   function nearBottom(){return out.scrollHeight-out.scrollTop-out.clientHeight<40;}
+  // Stamp echoed TX lines with [HH:MM:SS.mmm], mirroring the daemon's receive
+  // timestamp (flushLine in core.go) so sent and received lines line up.
+  function pad(n,l){return String(n).padStart(l,'0');}
+  function ts(){var d=new Date();return pad(d.getHours(),2)+':'+pad(d.getMinutes(),2)+':'+pad(d.getSeconds(),2)+'.'+pad(d.getMilliseconds(),3);}
   var RE_ERR=${RE_ERR};
   var RE_WARN=${RE_WARN};
   var RE_DEBUG=${RE_DEBUG};
@@ -184,15 +209,19 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
     if(m.type==='append'){append(m.text,m.cls);}
     else if(m.type==='clear'){out.textContent='';lineBuf='';}
   });
+  var sendBtn=document.getElementById('send');
+  // Shared by Enter and the Send button so both append the chosen line ending.
+  function sendInput(){
+    var text=input.value;
+    var ending=ENDINGS[eol.value]||'\\r\\n';
+    vscode.postMessage({type:'input',text:text+ending});
+    if(LOCAL_ECHO&&text.length){append('['+ts()+'] '+text+'\\n','tx');}
+    input.value='';
+  }
   input.addEventListener('keydown',function(e){
-    if(e.key==='Enter'){
-      var text=input.value;
-      vscode.postMessage({type:'input',text:text});
-      if(LOCAL_ECHO&&text.length){append(text+'\\n','tx');}
-      input.value='';
-      e.preventDefault();
-    }
+    if(e.key==='Enter'){sendInput();e.preventDefault();}
   });
+  sendBtn.addEventListener('click',function(){sendInput();input.focus();});
   input.focus();
 </script>
 </body>

@@ -136,6 +136,7 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
   #out .lvl.err{color:${cErr};}
   #out .lvl.warn{color:${cWarn};}
   #out .lvl.tx{color:${cTx};}
+	  #out .lvl.rx{color:${cInfo};}
   #out .lvl.debug{color:${cDebug};opacity:0.7;}
   #out .lvl.info{color:${cInfo};}
   #out .lvl.meta{color:${cMeta};}
@@ -198,7 +199,8 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
     var stick=nearBottom();
     var idx;
     while((idx=lineBuf.indexOf('\\n'))>=0){
-      renderLine(lineBuf.slice(0,idx).replace(${RE_TRAIL},''),fb);
+      var ln=lineBuf.slice(0,idx).replace(${RE_TRAIL},'');
+      renderLine(cls==='rx'?'[RX] '+ln:ln,fb);
       lineBuf=lineBuf.slice(idx+1);
     }
     while(out.childNodes.length>5000){out.removeChild(out.firstChild);}
@@ -215,7 +217,7 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
     var text=input.value;
     var ending=ENDINGS[eol.value]||'\\r\\n';
     vscode.postMessage({type:'input',text:text+ending});
-    if(LOCAL_ECHO&&text.length){append('['+ts()+'] '+text+'\\n','tx');}
+    if(LOCAL_ECHO&&text.length){append('[TX]['+ts()+'] '+text+'\\n','tx');}
     input.value='';
   }
   input.addEventListener('keydown',function(e){
@@ -233,7 +235,7 @@ let rttView: RttMonitorViewProvider | undefined;
 
 /** Stream raw device bytes to the RTT monitor. */
 function rttRaw(data: string): void {
-  rttView?.append(data);
+  rttView?.append(data, 'rx');
 }
 
 /** Write a status line to the RTT monitor, ensuring a trailing newline. */

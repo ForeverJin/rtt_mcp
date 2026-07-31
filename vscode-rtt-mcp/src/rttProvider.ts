@@ -6,6 +6,7 @@
  * `rtt_read` and forwards data to a callback.
  */
 
+import * as fs from 'fs';
 import { McpCallResult, McpClient } from './mcpClient';
 
 export interface RttConnectOptions {
@@ -142,9 +143,12 @@ export class RttProvider {
     this.stopMonitor();
     if (!this.isConnected) return;
     this._monitoring = true;
-    // Stream from the start of this connection's broadcast log (the server
-    // truncates it on connect, so offset 0 == only data seen this session).
-    this.monitorOffset = 0;
+    // Begin at the CURRENT END of the broadcast log so we stream only data that
+    // arrives after the monitor starts — never replaying history. The daemon
+    // truncates the log only on its first-ever connect; reconnects append (to
+    // preserve history across idle-watchdog drops), so offset 0 would re-stream
+    // the entire accumulated log on every reconnect. Mirrors RttLogTail.start().
+    this.monitorOffset = this.currentLogSize();
     // Poll SERIALLY: schedule the next tick only after the current round-trip
     // (bridge -> daemon -> readRaw) resolves. setInterval would fire overlapping
     // ticks whenever a poll takes longer than the interval, and both would read
@@ -169,6 +173,17 @@ export class RttProvider {
       this.monitorTimer = null;
     }
     this._monitoring = false;
+  }
+
+  /** Current byte size of the broadcast log (0 if it can't be stat'd). Used to
+   * begin streaming at EOF so a freshly started monitor never replays old log
+   * content. */
+  private currentLogSize(): number {
+    try {
+      return fs.statSync(this.logFile).size;
+    } catch {
+      return 0;
+    }
   }
 
   async shutdown(): Promise<void> {

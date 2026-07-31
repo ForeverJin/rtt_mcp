@@ -68,8 +68,10 @@ class RttMonitorViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Clear the monitor's output area. */
+  /** Clear the monitor's output area, including data buffered before the panel
+   * was first revealed. */
   clear(): void {
+    this.pending = [];
     this.view?.webview.postMessage({ type: 'clear' });
   }
 
@@ -527,6 +529,7 @@ async function showMenu(): Promise<void> {
 
 async function connectCmd(): Promise<void> {
   stopLogTail(); // provider.startMonitor will own the panel; avoid double-write.
+  rttView?.clear(); // fresh session: drop prior output so reconnect shows no history
   showRttMonitor();
   await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: 'RTT', cancellable: false },

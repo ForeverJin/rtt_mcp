@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP RTT Server 工作流程图</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        h1 {
+            text-align: center;
+            color: #00d9ff;
+            margin-bottom: 10px;
+            font-size: 1.8em;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 40px;
+            font-size: 0.95em;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .section {
+            margin-bottom: 50px;
+        }
+        .section-title {
+            color: #ff6b9d;
+            font-size: 1.3em;
+            margin-bottom: 20px;
+            padding-left: 10px;
+            border-left: 4px solid #ff6b9d;
+        }
+        svg {
+            display: block;
+            margin: 0 auto;
+            overflow: visible;
+        }
+        .box {
+            fill: #16213e;
+            stroke: #00d9ff;
+            stroke-width: 2;
+            rx: 8;
+            transition: all 0.3s;
+        }
+        .box:hover {
+            fill: #1f3460;
+            stroke: #ff6b9d;
+            cursor: pointer;
+        }
+        .box-dashed {
+            stroke-dasharray: 5,5;
+            stroke: #4a5568;
+        }
+        .box-dashed:hover {
+            stroke: #00d9ff;
+        }
+        .box-daemon {
+            fill: #2d1f3d;
+            stroke: #9b59b6;
+        }
+        .box-daemon:hover {
+            fill: #3d2a52;
+            stroke: #e74c3c;
+        }
+        .text {
+            fill: #fff;
+            font-size: 13px;
+            text-anchor: middle;
+            dominant-baseline: middle;
+            pointer-events: none;
+        }
+        .text-small {
+            font-size: 11px;
+            fill: #aaa;
+        }
+        .text-title {
+            font-size: 14px;
+            font-weight: bold;
+            fill: #00d9ff;
+        }
+        .arrow {
+            fill: none;
+            stroke: #00d9ff;
+            stroke-width: 2;
+            marker-end: url(#arrowhead);
+        }
+        .arrow-label {
+            fill: #888;
+            font-size: 10px;
+            text-anchor: middle;
+        }
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+        }
+        .legend-line {
+            width: 30px;
+            height: 3px;
+            border-radius: 2px;
+        }
+        .desc {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+            border: 1px solid #333;
+        }
+        .desc h3 {
+            color: #00d9ff;
+            margin-bottom: 10px;
+        }
+        .desc p {
+            color: #bbb;
+            line-height: 1.6;
+            margin-bottom: 10px;
+        }
+        .desc ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .desc li {
+            color: #aaa;
+            padding: 4px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+        .desc li::before {
+            content: "▸";
+            position: absolute;
+            left: 0;
+            color: #00d9ff;
+        }
+        .tool-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .tool-item {
+            background: #0f3460;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-size: 0.85em;
+            color: #00d9ff;
+            border: 1px solid #1a4a7a;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MCP RTT Server 工作流程图</h1>
+        <p class="subtitle">SEGGER J-Link RTT 与 MCP 协议的集成架构</p>
+
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #16213e; border: 2px solid #00d9ff;"></div>
+                <span>客户端/入口</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #1f3460; border: 2px solid #ff6b9d;"></div>
+                <span>核心组件</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #2d1f3d; border: 2px solid #9b59b6;"></div>
+                <span>守护进程</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background: #4a5568;"></div>
+                <span>可选路径</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-line" style="background: #00d9ff;"></div>
+                <span>主数据流</span>
+            </div>
+        </div>
+
+        <!-- Architecture Overview -->
+        <div class="section">
+            <h2 class="section-title">整体架构</h2>
+            <svg width="900" height="480" viewBox="0 0 900 480">
+                <defs>
+                    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#00d9ff"/>
+                    </marker>
+                    <marker id="arrowhead-gray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#4a5568"/>
+                    </marker>
+                    <marker id="arrowhead-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#9b59b6"/>
+                    </marker>
+                </defs>
+
+                <!-- Claude Code -->
+                <rect class="box" x="50" y="80" width="120" height="60"/>
+                <text class="text text-title" x="110" y="100">Claude Code</text>
+                <text class="text text-small" x="110" y="120">MCP 客户端</text>
+
+                <!-- VSCode Extension -->
+                <rect class="box" x="50" y="180" width="120" height="60"/>
+                <text class="text text-title" x="110" y="200">VSCode</text>
+                <text class="text text-small" x="110" y="220">扩展</text>
+
+                <!-- MCP Bridge -->
+                <rect class="box" x="230" y="130" width="130" height="60"/>
+                <text class="text text-title" x="295" y="150">bridge.py</text>
+                <text class="text text-small" x="295" y="170">stdio↔SSE 桥接</text>
+
+                <!-- Daemon (http_server.py) -->
+                <rect class="box box-daemon" x="420" y="130" width="150" height="60"/>
+                <text class="text text-title" x="495" y="150" fill="#9b59b6">http_server.py</text>
+                <text class="text text-small" x="495" y="170">SSE 守护进程</text>
+
+                <!-- server.py -->
+                <rect class="box" x="420" y="30" width="150" height="60"/>
+                <text class="text text-title" x="495" y="50">server.py</text>
+                <text class="text text-small" x="495" y="70">MCP 服务端</text>
+
+                <!-- JLinkRTT -->
+                <rect class="box box-daemon" x="630" y="130" width="130" height="60"/>
+                <text class="text text-title" x="695" y="150" fill="#9b59b6">jlink_rtt.py</text>
+                <text class="text text-small" x="695" y="170">J-Link RTT 封装</text>
+
+                <!-- J-Link Hardware -->
+                <rect class="box" x="820" y="130" width="60" height="60"/>
+                <text class="text text-title" x="850" y="150">J-Link</text>
+                <text class="text text-small" x="850" y="170">硬件</text>
+
+                <!-- Target Device -->
+                <rect class="box" x="820" y="280" width="60" height="50"/>
+                <text class="text text-title" x="850" y="295">目标</text>
+                <text class="text text-small" x="850" y="315">设备</text>
+
+                <!-- Log File -->
+                <rect class="box-dashed" x="630" y="230" width="130" height="50"/>
+                <text class="text text-small" x="695" y="252">rtt_output.log</text>
+                <text class="text text-small" x="695" y="270">日志文件</text>
+
+                <!-- Arrows -->
+                <!-- Claude Code -> bridge -->
+                <path class="arrow" d="M170 110 L220 160"/>
+                <path class="arrow" d="M170 180 L220 160"/>
+                <text class="arrow-label" x="175" y="140">stdio</text>
+
+                <!-- Claude Code -> server.py (direct mode) -->
+                <path class="arrow" style="stroke: #4a5568; marker-end: url(#arrowhead-gray);" d="M110 140 L110 20 L420 30"/>
+                <text class="arrow-label" x="180" y="75" fill="#4a5568">直接模式</text>
+                <text class="arrow-label" x="180" y="88" fill="#4a5568">(daemon不可达)</text>
+
+                <!-- bridge -> daemon -->
+                <path class="arrow" d="M360 160 L410 160"/>
+                <text class="arrow-label" x="385" y="150">SSE</text>
+
+                <!-- server.py -> daemon (proxy mode) -->
+                <path class="arrow" d="M495 90 L495 120"/>
+                <text class="arrow-label" x="510" y="105">代理</text>
+
+                <!-- daemon -> jlink_rtt -->
+                <path class="arrow" d="M570 160 L620 160"/>
+                <text class="arrow-label" x="595" y="150">调用</text>
+
+                <!-- jlink_rtt -> J-Link -->
+                <path class="arrow" d="M760 160 L810 160"/>
+                <text class="arrow-label" x="785" y="150">pylink</text>
+
+                <!-- J-Link -> Target -->
+                <path class="arrow" d="M850 190 L850 270"/>
+                <text class="arrow-label" x="865" y="230">RTT</text>
+
+                <!-- jlink_rtt -> Log -->
+                <path class="arrow" style="stroke: #9b59b6; marker-end: url(#arrowhead-purple);" d="M695 190 L695 220"/>
+                <text class="arrow-label" x="710" y="205" fill="#9b59b6">写入</text>
+
+                <!-- Mode label -->
+                <text class="text" x="300" y="250" fill="#4a5568" font-size="12px">守护进程模式</text>
+                <text class="text" x="280" y="380" fill="#4a5568" font-size="12px">独立模式 (daemon未运行)</text>
+
+                <!-- Mode boxes -->
+                <rect x="230" y="240" width="180" height="80" fill="none" stroke="#333" stroke-dasharray="5,5" rx="8"/>
+                <rect x="60" y="350" width="220" height="90" fill="none" stroke="#333" stroke-dasharray="5,5" rx="8"/>
+
+                <!-- Daemon reachability check -->
+                <text class="text" x="340" y="420" fill="#888" font-size="11px">is_daemon_reachable() 检测</text>
+                <path d="M295 90 L295 400 L280 400" fill="none" stroke="#4a5568" stroke-dasharray="3,3" marker-end="url(#arrowhead-gray)"/>
+            </svg>
+        </div>
+
+        <!-- Two Modes -->
+        <div class="section">
+            <h2 class="section-title">两种运行模式</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div class="desc">
+                    <h3>🔷 守护进程模式 (推荐)</h3>
+                    <p>多个客户端共享单一 J-Link 连接</p>
+                    <ul>
+                        <li>启动 <code>http_server.py</code> 守护进程</li>
+                        <li>Claude Code 通过 bridge.py 代理到 daemon</li>
+                        <li>VSCode 扩展也连接同一 daemon</li>
+                        <li>零争用，共享连接</li>
+                    </ul>
+                    <p style="margin-top:10px;color:#00d9ff;">命令: <code>rtt-mcp-daemon --host 127.0.0.1 --port 8765</code></p>
+                </div>
+                <div class="desc">
+                    <h3>🔶 独立模式 (fallback)</h3>
+                    <p>daemon 未运行时自动启用</p>
+                    <ul>
+                        <li>server.py 检测 daemon 不可达</li>
+                        <li>直接打开 J-Link 连接</li>
+                        <li>适用于 Claude-only 会话</li>
+                        <li>与 VSCode 扩展不共存</li>
+                    </ul>
+                    <p style="margin-top:10px;color:#ff6b9d;">自动检测，无需手动切换</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tool Flow -->
+        <div class="section">
+            <h2 class="section-title">工具调用流程</h2>
+            <svg width="800" height="200" viewBox="0 0 800 200">
+                <!-- Tool definitions in tools.py -->
+                <rect class="box" x="20" y="70" width="140" height="60"/>
+                <text class="text text-title" x="90" y="90">tools.py</text>
+                <text class="text text-small" x="90" y="110">工具定义</text>
+
+                <!-- Flow arrows -->
+                <path class="arrow" d="M160 100 L200 100"/>
+                <text class="arrow-label" x="180" y="90">调用</text>
+
+                <!-- jlink_connect -->
+                <rect class="box" x="200" y="30" width="130" height="40"/>
+                <text class="text" x="265" y="50">jlink_connect</text>
+
+                <!-- jlink_disconnect -->
+                <rect class="box" x="200" y="80" width="130" height="40"/>
+                <text class="text" x="265" y="100">jlink_disconnect</text>
+
+                <!-- jlink_status -->
+                <rect class="box" x="200" y="130" width="130" height="40"/>
+                <text class="text" x="265" y="150">jlink_status</text>
+
+                <!-- rtt operations -->
+                <path class="arrow" d="M330 100 L370 100"/>
+                <rect class="box" x="370" y="50" width="130" height="100"/>
+                <text class="text text-title" x="435" y="75">RTT 操作</text>
+                <text class="text text-small" x="435" y="95">rtt_read (排他)</text>
+                <text class="text text-small" x="435" y="115">rtt_read_log (广播)</text>
+                <text class="text text-small" x="435" y="135">rtt_write</text>
+
+                <!-- jlink_rtt -->
+                <path class="arrow" d="M500 100 L540 100"/>
+                <rect class="box box-daemon" x="540" y="70" width="100" height="60"/>
+                <text class="text text-title" x="590" y="90" fill="#9b59b6">jlink_rtt.py</text>
+                <text class="text text-small" x="590" y="110">JLinkRTT 类</text>
+
+                <!-- jlink_connect details -->
+                <text class="text-small" x="265" y="20" fill="#666">连接 J-Link + 启动 RTT 监控</text>
+                <path d="M265 30 L265 50" stroke="#666" stroke-width="1" marker-end="url(#arrowhead-gray)"/>
+
+                <!-- rtt_read_log details -->
+                <text class="text-small" x="435" y="160" fill="#666">多消费者安全</text>
+                <path d="M435 150 L435 135" stroke="#666" stroke-width="1" marker-end="url(#arrowhead-gray)"/>
+            </svg>
+
+            <div class="desc" style="margin-top: 20px;">
+                <h3>可用工具列表</h3>
+                <div class="tool-list">
+                    <div class="tool-item">jlink_connect - 连接 J-Link</div>
+                    <div class="tool-item">jlink_disconnect - 断开连接</div>
+                    <div class="tool-item">jlink_status - 查看状态</div>
+                    <div class="tool-item">rtt_list_devices - 列出设备</div>
+                    <div class="tool-item">rtt_read - 读取(排他性)</div>
+                    <div class="tool-item">rtt_read_log - 读取(广播)</div>
+                    <div class="tool-item">rtt_read_raw - 读取(字节偏移)</div>
+                    <div class="tool-item">rtt_write - 写入数据</div>
+                    <div class="tool-item">rtt_clear - 清除缓冲区</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Flow -->
+        <div class="section">
+            <h2 class="section-title">RTT 数据流</h2>
+            <svg width="800" height="180" viewBox="0 0 800 180">
+                <!-- Target Device -->
+                <rect class="box" x="30" y="60" width="80" height="60"/>
+                <text class="text text-title" x="70" y="80">目标设备</text>
+                <text class="text text-small" x="70" y="100">固件 RTT</text>
+
+                <!-- J-Link -->
+                <rect class="box" x="150" y="60" width="80" height="60"/>
+                <text class="text text-title" x="190" y="80">J-Link</text>
+                <text class="text text-small" x="190" y="100">调试器</text>
+
+                <!-- pylink library -->
+                <rect class="box" x="270" y="60" width="100" height="60"/>
+                <text class="text text-title" x="320" y="80">pylink</text>
+                <text class="text text-small" x="320" y="100">Python 库</text>
+
+                <!-- JLinkRTT -->
+                <rect class="box box-daemon" x="410" y="40" width="120" height="100"/>
+                <text class="text text-title" x="470" y="60" fill="#9b59b6">JLinkRTT</text>
+                <text class="text text-small" x="470" y="80">后台监控线程</text>
+                <text class="text text-small" x="470" y="100">环形缓冲区</text>
+                <text class="text text-small" x="470" y="120">广播日志</text>
+
+                <!-- Ring buffer -->
+                <rect class="box" x="570" y="20" width="100" height="50"/>
+                <text class="text" x="620" y="40">rtt_read</text>
+                <text class="text text-small" x="620" y="58">排他读取</text>
+
+                <!-- Broadcast log -->
+                <rect class="box" x="570" y="80" width="100" height="50"/>
+                <text class="text" x="620" y="100">rtt_read_log</text>
+                <text class="text text-small" x="620" y="118">多消费者安全</text>
+
+                <!-- Log file -->
+                <rect class="box-dashed" x="570" y="140" width="100" height="30"/>
+                <text class="text text-small" x="620" y="158">rtt_output.log</text>
+
+                <!-- Arrows -->
+                <path class="arrow" d="M110 90 L140 90"/>
+                <path class="arrow" d="M230 90 L260 90"/>
+                <path class="arrow" d="M370 90 L400 90"/>
+                <path class="arrow" d="M530 45 L560 45"/>
+                <path class="arrow" d="M530 105 L560 105"/>
+                <path class="arrow" d="M470 140 L560 155"/>
+                <path class="arrow" style="stroke: #4a5568; marker-end: url(#arrowhead-gray);" d="M530 75 L555 75"/>
+
+                <!-- Labels -->
+                <text class="text-small" x="670" y="50" fill="#888">读后清空</text>
+                <text class="text-small" x="670" y="110" fill="#888">持续累积</text>
+            </svg>
+        </div>
+
+        <!-- Installation Flow -->
+        <div class="section">
+            <h2 class="section-title">安装与使用流程</h2>
+            <svg width="800" height="280" viewBox="0 0 800 280">
+                <!-- Step boxes -->
+                <rect class="box" x="20" y="20" width="150" height="60"/>
+                <text class="text text-title" x="95" y="40">1. 安装依赖</text>
+                <text class="text text-small" x="95" y="60">pip install .</text>
+                <text class="text text-small" x="95" y="72">install.ps1/sh</text>
+
+                <rect class="box" x="200" y="20" width="150" height="60"/>
+                <text class="text text-title" x="275" y="40">2. 注册 MCP</text>
+                <text class="text text-small" x="275" y="60">claude mcp add</text>
+
+                <rect class="box" x="400" y="20" width="150" height="60"/>
+                <text class="text text-title" x="475" y="40">3. 启动 daemon</text>
+                <text class="text text-small" x="475" y="60">rtt-mcp-daemon</text>
+
+                <rect class="box" x="600" y="20" width="150" height="60"/>
+                <text class="text text-title" x="675" y="40">4. 使用</text>
+                <text class="text text-small" x="675" y="60">Claude Code / Inspector</text>
+
+                <!-- Arrows -->
+                <path class="arrow" d="M170 50 L190 50"/>
+                <path class="arrow" d="M350 50 L390 50"/>
+                <path class="arrow" d="M550 50 L590 50"/>
+
+                <!-- Detail section -->
+                <rect x="20" y="110" width="760" height="150" fill="none" stroke="#333" stroke-dasharray="5,5" rx="8"/>
+
+                <text class="text text-title" x="50" y="140" fill="#00d9ff">Claude Code 使用示例</text>
+                <text class="text" x="50" y="170" fill="#aaa" font-size="12px">> jlink_connect(device="HC32L19x")</text>
+                <text class="text" x="50" y="190" fill="#aaa" font-size="12px">> rtt_read()</text>
+                <text class="text" x="50" y="210" fill="#aaa" font-size="12px">> rtt_write(channel=0, data="status\r\n")</text>
+                <text class="text" x="50" y="230" fill="#aaa" font-size="12px">> jlink_disconnect()</text>
+
+                <text class="text text-title" x="450" y="140" fill="#9b59b6">VSCode 扩展</text>
+                <text class="text" x="450" y="170" fill="#aaa" font-size="12px">自动启动 daemon</text>
+                <text class="text" x="450" y="190" fill="#aaa" font-size="12px">RTT 实时显示</text>
+                <text class="text" x="450" y="210" fill="#aaa" font-size="12px">读写命令发送</text>
+                <text class="text" x="450" y="230" fill="#aaa" font-size="12px">调用 /shutdown 清理</text>
+            </svg>
+        </div>
+    </div>
+</body>
+</html>

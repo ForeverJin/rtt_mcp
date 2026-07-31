@@ -71,6 +71,10 @@ export class RttProvider {
       serial: opts.serial,
       device: opts.device ?? this.device,
       speed: opts.speed ?? this.speed,
+      // Redirect the daemon's broadcast log to this workspace's file, so an
+      // already-running (shared) daemon writes THIS project's history here
+      // instead of the global/previous project's log.
+      log_file: this.logFile || undefined,
     });
   }
 

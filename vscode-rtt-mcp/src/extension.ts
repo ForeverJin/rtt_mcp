@@ -293,7 +293,7 @@ const DAEMON_URL_DEFAULT = 'http://127.0.0.1:8765/sse';
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionCtx = context;
-  logFileDefault = defaultLogFile();
+  logFileDefault = resolveLogFile();
 
   const config = vscode.workspace.getConfiguration('rtt-mcp');
   const binary = resolveBinary(config);
@@ -341,6 +341,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const configSub = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('rtt-mcp')) {
       const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+      logFileDefault = resolveLogFile(); // logScope / logFile may have changed
       void provider.shutdown();
       provider = new RttProvider(
         resolveBinary(cfg),
@@ -410,6 +411,49 @@ function parseDaemonHostPort(url: string): { host: string; port: number } {
 }
 
 /**
+ * Resolve the RTT log file this window tails and asks the daemon to write.
+ *
+ * Priority: explicit `rtt-mcp.logFile` setting (supports ${workspaceFolder})
+ * > per-workspace path under the state dir when logScope is 'workspace'
+ * > the legacy global default (RTT_LOG_FILE env / shared rtt_output.log).
+ *
+ * Per-workspace isolation is the fix for "history from project A shows up in
+ * project B": every workspace gets projects/<name>-<hash8>/rtt_output.log, the
+ * hash disambiguating same-named folders. The path is handed to the daemon via
+ * RTT_LOG_FILE on spawn AND as jlink_connect's log_file (so an already-running
+ * daemon switches to this project's file on connect).
+ */
+function resolveLogFile(): string {
+  const cfg = vscode.workspace.getConfiguration('rtt-mcp');
+  const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+  const explicit = cfg.get<string>('logFile', '').trim();
+  if (explicit) {
+    const expanded = explicit.replace(/\$\{workspaceFolder\}/g, ws ?? '');
+    return path.resolve(expanded);
+  }
+
+  if (cfg.get<string>('logScope', 'workspace') === 'workspace' && ws) {
+    const name = path.basename(ws).replace(/[^\w.-]+/g, '_');
+    const hash = crypto.createHash('sha1').update(ws.toLowerCase()).digest('hex').slice(0, 8);
+    return path.join(stateBaseDir(), 'mcp-rtt-server', 'projects', `${name}-${hash}`, 'rtt_output.log');
+  }
+
+  return defaultLogFile();
+}
+
+/** Per-platform state/cache base directory, mirroring the Go server's stateDir(). */
+function stateBaseDir(): string {
+  if (process.platform === 'win32') {
+    return process.env.LOCALAPPDATA || os.homedir();
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Caches');
+  }
+  return process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+}
+
+/**
  * Default RTT log file location, mirroring the Go server's stateDir() so
  * "Open RTT Log File" opens the file the daemon actually writes. An explicit
  * RTT_LOG_FILE env var wins; otherwise %LOCALAPPDATA% (Win),
@@ -418,15 +462,7 @@ function parseDaemonHostPort(url: string): { host: string; port: number } {
 function defaultLogFile(): string {
   const envFile = process.env.RTT_LOG_FILE;
   if (envFile) return path.resolve(envFile);
-  let base: string;
-  if (process.platform === 'win32') {
-    base = process.env.LOCALAPPDATA || os.homedir();
-  } else if (process.platform === 'darwin') {
-    base = path.join(os.homedir(), 'Library', 'Caches');
-  } else {
-    base = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
-  }
-  return path.join(base, 'mcp-rtt-server', 'rtt_output.log');
+  return path.join(stateBaseDir(), 'mcp-rtt-server', 'rtt_output.log');
 }
 
 async function isDaemonUp(url: string): Promise<boolean> {
@@ -461,6 +497,10 @@ async function ensureDaemon(): Promise<boolean> {
     JLINK_RAM_START: cfg.get<string>('ramStart', '0x20000000'),
     JLINK_RAM_SIZE: cfg.get<string>('ramSize', '0x20000'),
     RTT_CHANNEL: String(cfg.get<number>('channel', 0)),
+    // Per-workspace log so this project's RTT history stays out of other
+    // projects' panels. Connects from this window also pass it as log_file, so
+    // a daemon that was already running gets redirected too.
+    RTT_LOG_FILE: logFileDefault,
   };
   daemonProc = spawn(binary, ['daemon', '-host', host, '-port', String(port)], {
     env,

@@ -2,7 +2,7 @@
   "name": "vscode-rtt-mcp",
   "displayName": "RTT MCP Quick Access",
   "description": "Quick access to mcp-rtt-server (J-Link RTT) tools via status bar and command palette",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -149,6 +149,21 @@
           "type": "string",
           "default": "http://127.0.0.1:8765/sse",
           "description": "URL of the shared RTT MCP daemon (SSE). The extension starts it if it is not already running."
+        },
+        "rtt-mcp.logScope": {
+          "type": "string",
+          "enum": ["workspace", "global"],
+          "default": "workspace",
+          "enumDescriptions": [
+            "Per-project RTT log: each workspace gets its own rtt_output.log (projects/<name>-<hash>/), so history from one project never shows up in another.",
+            "Single shared rtt_output.log for all workspaces (legacy behavior)."
+          ],
+          "description": "Where the RTT broadcast log (history) lives. 'workspace' isolates RTT history per project; 'global' keeps the old single shared file."
+        },
+        "rtt-mcp.logFile": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit RTT log file path (overrides logScope). Supports ${workspaceFolder}, e.g. ${workspaceFolder}/.vscode/rtt_output.log. Leave empty to use the logScope-derived location."
         },
         "rtt-mcp.pollIntervalMs": {
           "type": "number",

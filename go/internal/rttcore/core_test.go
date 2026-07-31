@@ -41,7 +41,7 @@ func TestEnsureConnected_ReconnectsAfterIdle(t *testing.T) {
 	c := NewCore(jlink.NewMockBackend(), testConfig(t))
 	defer c.Disconnect()
 
-	if err := c.Connect("", "", 0); err != nil {
+	if err := c.Connect("", "", 0, ""); err != nil {
 		t.Fatalf("initial Connect: %v", err)
 	}
 	if !c.IsConnected() {
@@ -63,11 +63,43 @@ func TestEnsureConnected_ReconnectsAfterIdle(t *testing.T) {
 	}
 }
 
+// After a successful connect then an idle release, if the probe can no longer
+// be reached (simulated unplug), EnsureConnected must fail once and then serve
+// the cooldown error WITHOUT paying another failing bring-up, so polling read
+// tools stop busy-looping. Once the backend recovers and the cooldown elapses,
+// EnsureConnected reconnects again.
+func TestEnsureConnected_ReconnectCooldown(t *testing.T) {
+	mb := jlink.NewConfigurableMock()
+	c := NewCore(mb, testConfig(t))
+	defer c.Disconnect()
+
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("initial Connect: %v", err)
+	}
+	// Simulate the idle watchdog releasing the probe, then an unplug.
+	c.Disconnect()
+	mb.SetFailConnect(true)
+
+	// First reconnect attempt actually tries and fails.
+	err1 := c.EnsureConnected()
+	if err1 == nil {
+		t.Fatal("EnsureConnected after unplug: want error, got nil")
+	}
+	if err1 == errReconnectCooldown {
+		t.Fatalf("first attempt should try (not cooldown), got %v", err1)
+	}
+
+	// Immediate retry must be gated by the cooldown (no second failing bring-up).
+	if err2 := c.EnsureConnected(); err2 != errReconnectCooldown {
+		t.Fatalf("second attempt: want cooldown error, got %v", err2)
+	}
+}
+
 // EnsureConnected on an already-connected probe is a no-op (no double bring-up).
 func TestEnsureConnected_NoOpWhenConnected(t *testing.T) {
 	c := NewCore(jlink.NewMockBackend(), testConfig(t))
 	defer c.Disconnect()
-	if err := c.Connect("", "", 0); err != nil {
+	if err := c.Connect("", "", 0, ""); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	if err := c.EnsureConnected(); err != nil {
@@ -82,10 +114,10 @@ func TestEnsureConnected_NoOpWhenConnected(t *testing.T) {
 func TestConnect_Idempotent(t *testing.T) {
 	c := NewCore(jlink.NewMockBackend(), testConfig(t))
 	defer c.Disconnect()
-	if err := c.Connect("", "", 0); err != nil {
+	if err := c.Connect("", "", 0, ""); err != nil {
 		t.Fatalf("first Connect: %v", err)
 	}
-	if err := c.Connect("", "", 0); err != nil {
+	if err := c.Connect("", "", 0, ""); err != nil {
 		t.Fatalf("second Connect: want nil, got %v", err)
 	}
 	if !c.IsConnected() {
@@ -100,14 +132,14 @@ func TestReconnect_PreservesLog(t *testing.T) {
 	c := NewCore(jlink.NewMockBackend(), cfg)
 	defer c.Disconnect()
 
-	if err := c.Connect("", "", 0); err != nil {
+	if err := c.Connect("", "", 0, ""); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	// Stamp a marker line into the broadcast log while connected.
 	c.ingest([]byte("before-idle-line\n"))
 	c.Disconnect()
 
-	// Reconnect via EnsureConnected (reconnect == true → append mode, no truncate).
+	// Reconnect via EnsureConnected (reconnect == true �?append mode, no truncate).
 	if err := c.EnsureConnected(); err != nil {
 		t.Fatalf("EnsureConnected: %v", err)
 	}

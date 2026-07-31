@@ -22,6 +22,13 @@ import (
 // overflow the tail half is retained (matching Python's _monitor_loop).
 const maxLineBuf = 4096
 
+// reconnectCooldown throttles transparent reconnect attempts from read/write
+// after one fails (e.g. the probe was physically unplugged). Within the
+// cooldown, polling read tools return a prompt "not connected" instead of
+// paying a full failing probe bring-up (open + SWD + connect + 500ms) on every
+// call — which is what keeps an agent from busy-looping empty reads.
+const reconnectCooldown = 3 * time.Second
+
 // rttMagic is the control-block signature scanned for in RAM.
 const rttMagic = "SEGGER RTT"
 
@@ -33,24 +40,26 @@ type Status struct {
 	Serial         string
 	Speed          int
 	Channel        int
-	RingBufferSize int // current ring entries
+	RingBufferSize int    // current ring entries
+	LogFile        string // resolved broadcast-log path in use (empty before first connect)
 }
 
 // Core holds the singleton RTT engine state.
 type Core struct {
-	mu         sync.Mutex // guards connect/disconnect lifecycle + state fields
-	cfg        *config.Config
-	backend    jlink.RTTBackend
-	ring       *ring
-	log        *logSink
-	lineMu     sync.Mutex // guards lineBuf during monitor flushes
-	lineBuf    string
+	mu            sync.Mutex // guards connect/disconnect lifecycle + state fields
+	cfg           *config.Config
+	backend       jlink.RTTBackend
+	ring          *ring
+	log           *logSink
+	lineMu        sync.Mutex // guards lineBuf during monitor flushes
+	lineBuf       string
 	running       bool
 	connectedOnce bool // true after the first successful Connect; never cleared (drives lazy EnsureConnected)
 	rttStarted    bool
 	device        string // device actually connected (reported by Status)
 	speed         int    // speed actually used
 	serial        string // serial actually used
+	logPath       string // resolved broadcast-log path in use (per-workspace isolation)
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
 
@@ -59,6 +68,12 @@ type Core struct {
 	idleMu      sync.Mutex
 	idleTimer   *time.Timer
 	idleTimeout time.Duration
+
+	// reconnectMu guards lastReconnectFail — the cooldown gate that throttles
+	// failing transparent reconnects from read/write (see reconnectCooldown).
+	// Cleared on any successful Connect; set on a failed EnsureConnected.
+	reconnectMu       sync.Mutex
+	lastReconnectFail time.Time
 }
 
 var (
@@ -114,6 +129,12 @@ func (c *Core) IsConnected() bool {
 // succeeded, so read/write callers can tell the user to call jlink_connect.
 var errNeverConnected = errors.New("J-Link has never been connected; call jlink_connect first")
 
+// errReconnectCooldown is returned by EnsureConnected while the post-failure
+// cooldown is active: the probe was connected before but a recent transparent
+// reconnect failed (likely unplugged), so callers should surface "not
+// connected" and stop polling instead of retrying every call.
+var errReconnectCooldown = errors.New("J-Link is not connected (recent reconnect failed; call jlink_connect to retry)")
+
 // EnsureConnected transparently re-establishes the probe after the idle watchdog
 // released it, reusing the last successful connection parameters. It makes the
 // idle auto-disconnect invisible to read/write callers: a client that connected,
@@ -132,17 +153,37 @@ func (c *Core) EnsureConnected() error {
 		return nil
 	}
 	once := c.connectedOnce
-	serial, device, speed := c.serial, c.device, c.speed
+	serial, device, speed, logPath := c.serial, c.device, c.speed, c.logPath
 	c.mu.Unlock()
 	if !once {
 		return errNeverConnected
 	}
-	return c.Connect(serial, device, speed)
+	// Throttle failing reconnects: if a recent transparent reconnect failed, do
+	// not pay another full failing bring-up on this poll — report not-connected
+	// until the cooldown elapses. (reconnectMu is released before Connect so the
+	// lock order stays c.mu -> reconnectMu, never the reverse.)
+	c.reconnectMu.Lock()
+	cooling := !c.lastReconnectFail.IsZero() && time.Since(c.lastReconnectFail) < reconnectCooldown
+	c.reconnectMu.Unlock()
+	if cooling {
+		return errReconnectCooldown
+	}
+	if err := c.Connect(serial, device, speed, logPath); err != nil {
+		c.reconnectMu.Lock()
+		c.lastReconnectFail = time.Now()
+		c.reconnectMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // Connect runs the full probe bring-up: open → SWD → device connect → RTT
 // control-block discovery → start monitor. Returns nil on success.
-func (c *Core) Connect(serial, device string, speed int) error {
+//
+// logFile optionally redirects the broadcast log for this connection (empty →
+// RTT_LOG_FILE / platform default). Clients pass a per-workspace path here so
+// each project gets its own RTT history instead of sharing one global file.
+func (c *Core) Connect(serial, device string, speed int, logFile string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -225,17 +266,22 @@ func (c *Core) Connect(serial, device string, speed int) error {
 		c.ingest(data)
 	}
 
-	// 6. (Re)open the broadcast log. The first connect truncates prior content
-	// (mirrors Python's 'w' mode); a reconnect appends so transparent
-	// re-establishment after the idle watchdog does not wipe RTT history.
-	path, err := resolveLogPath(c.cfg.LogFile)
+	// 6. (Re)open the broadcast log. A fresh connect (or a connect that switches
+	// to a different log path, e.g. another workspace) truncates prior content
+	// (mirrors Python's 'w' mode); a reconnect on the SAME path appends so
+	// transparent re-establishment after the idle watchdog does not wipe RTT
+	// history.
+	if logFile == "" {
+		logFile = c.cfg.LogFile
+	}
+	path, err := resolveLogPath(logFile)
 	if err != nil {
 		c.backend.RTTStop()
 		c.backend.Close()
 		return fmt.Errorf("resolve log path: %w", err)
 	}
 	var sink *logSink
-	if reconnect {
+	if reconnect && path == c.logPath {
 		sink, err = openLogAppend(path)
 	} else {
 		sink, err = openLog(path)
@@ -246,10 +292,16 @@ func (c *Core) Connect(serial, device string, speed int) error {
 		return fmt.Errorf("open log: %w", err)
 	}
 	c.log = sink
+	c.logPath = path
 
 	// 7. Start the monitor goroutine.
 	c.running = true
 	c.connectedOnce = true
+	// A successful bring-up clears any prior reconnect-failure cooldown so the
+	// next read/write can auto-reconnect immediately if idle-released again.
+	c.reconnectMu.Lock()
+	c.lastReconnectFail = time.Time{}
+	c.reconnectMu.Unlock()
 	c.stopCh = make(chan struct{})
 	c.wg.Add(1)
 	go c.monitorLoop()
@@ -522,9 +574,9 @@ func (c *Core) ListDevices() []string {
 // SupportedDeviceCount / SupportedDeviceName / SupportedDeviceIndex expose the
 // J-Link device database to the list/validate tools. They are probe-less: only
 // the loaded SEGGER DLL is consulted, so they work before jlink_connect.
-func (c *Core) SupportedDeviceCount() int             { return c.backend.SupportedDeviceCount() }
-func (c *Core) SupportedDeviceName(i int) string      { return c.backend.SupportedDeviceName(i) }
-func (c *Core) SupportedDeviceIndex(name string) int  { return c.backend.SupportedDeviceIndex(name) }
+func (c *Core) SupportedDeviceCount() int            { return c.backend.SupportedDeviceCount() }
+func (c *Core) SupportedDeviceName(i int) string     { return c.backend.SupportedDeviceName(i) }
+func (c *Core) SupportedDeviceIndex(name string) int { return c.backend.SupportedDeviceIndex(name) }
 
 // Clear empties the in-memory ring (does not touch device buffers).
 func (c *Core) Clear() {
@@ -555,5 +607,13 @@ func (c *Core) Status() Status {
 		Speed:          speed,
 		Channel:        c.cfg.Channel,
 		RingBufferSize: c.ring.len(),
+		LogFile:        c.logPath,
 	}
+}
+
+// ResolveLogPath exposes the log-path resolution used by Connect so the
+// jlink_connect tool can compare a requested log_file with the active one
+// (Status.LogFile) when deciding whether a reconnect is needed.
+func ResolveLogPath(override string) (string, error) {
+	return resolveLogPath(override)
 }

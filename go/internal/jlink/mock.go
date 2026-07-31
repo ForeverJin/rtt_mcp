@@ -3,6 +3,7 @@ package jlink
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,22 +12,52 @@ import (
 // It emits a synthetic heartbeat line on each RTTRead so the triple-sink path
 // (log file + stderr + ring buffer) can be verified end-to-end.
 type mockBackend struct {
-	mu       sync.Mutex
-	opened   bool
-	tick     int
-	product  string
-	core     string
-	started  bool
-	devices  []string
+	mu      sync.Mutex
+	opened  bool
+	tick    int
+	product string
+	core    string
+	started bool
+	devices []string
 }
 
 // NewMockBackend returns a backend that needs no SEGGER library or hardware.
 func NewMockBackend() RTTBackend {
+	return newMock()
+}
+
+// newMock builds the concrete mock so both NewMockBackend and the togglable
+// ConfigurableMock share one construction path.
+func newMock() *mockBackend {
 	return &mockBackend{
 		product: "J-LINK Mock (software)",
 		core:    "Cortex-M0+",
 		devices: []string{"J-Link Mock #0"},
 	}
+}
+
+// ConfigurableMock wraps the mock backend with a runtime-togglable device
+// connect failure, so tests can exercise the failing-reconnect / cooldown path
+// (connect once, then simulate an unplug) without any hardware.
+type ConfigurableMock struct {
+	*mockBackend
+	failConnect atomic.Bool
+}
+
+// NewConfigurableMock returns a mock whose ConnectDevice failure is togglable.
+func NewConfigurableMock() *ConfigurableMock {
+	return &ConfigurableMock{mockBackend: newMock()}
+}
+
+// SetFailConnect makes subsequent ConnectDevice calls fail (true) or succeed.
+func (m *ConfigurableMock) SetFailConnect(fail bool) { m.failConnect.Store(fail) }
+
+// ConnectDevice fails when armed via SetFailConnect, else delegates to the mock.
+func (m *ConfigurableMock) ConnectDevice(d string) error {
+	if m.failConnect.Load() {
+		return fmt.Errorf("mock: device connect failure (simulated unplug)")
+	}
+	return m.mockBackend.ConnectDevice(d)
 }
 
 func (m *mockBackend) Open(serial string) error {
@@ -43,8 +74,8 @@ func (m *mockBackend) Close() {
 	m.started = false
 }
 
-func (m *mockBackend) SetTifSWD()      {}
-func (m *mockBackend) SetSpeed(int)    {}
+func (m *mockBackend) SetTifSWD()                   {}
+func (m *mockBackend) SetSpeed(int)                 {}
 func (m *mockBackend) ConnectDevice(d string) error { return nil }
 
 func (m *mockBackend) CoreName() string    { return m.core }

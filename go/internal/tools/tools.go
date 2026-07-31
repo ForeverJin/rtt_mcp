@@ -23,7 +23,7 @@ func Register(s *mcp.Server) {
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "jlink_connect",
-			Description: "Connect to J-Link debugger and start RTT monitoring. Must be called before reading or writing RTT data.",
+			Description: "Connect to J-Link debugger and start RTT monitoring. Must be called before reading or writing RTT data. Pass log_file to redirect the broadcast RTT log to a per-project file (empty keeps the current/default path).",
 		}, handleConnect)
 
 	mcp.AddTool(s,
@@ -47,7 +47,7 @@ func Register(s *mcp.Server) {
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "rtt_read_raw",
-			Description: `Read new bytes from the broadcast log starting at a byte offset. Non-draining and multi-consumer safe: ideal for a continuous monitor that must coexist with other readers without stealing their data. Pass the returned next_offset as 'offset' on the next call; if the log rotated (next_offset > file size), pass offset=0. Returns JSON: {"data": "...", "next_offset": N}.`,
+			Description: `Read new bytes from the broadcast log starting at a byte offset. Non-draining and multi-consumer safe: ideal for a continuous monitor that must coexist with other readers without stealing their data. Pass the returned next_offset as 'offset' on the next call; if the log rotated (next_offset > file size), pass offset=0. Returns JSON: {"data": "...", "next_offset": N, "connected": bool}. When "connected" is false the J-Link is NOT connected — stop polling and call jlink_connect first.`,
 		}, handleReadRaw)
 
 	mcp.AddTool(s,
@@ -90,9 +90,10 @@ func Register(s *mcp.Server) {
 // ---- input structs (pointer fields => optional in the derived schema) ----
 
 type connectIn struct {
-	Serial *string `json:"serial,omitempty"`
-	Device *string `json:"device,omitempty"`
-	Speed  *int    `json:"speed,omitempty"`
+	Serial  *string `json:"serial,omitempty"`
+	Device  *string `json:"device,omitempty"`
+	Speed   *int    `json:"speed,omitempty"`
+	LogFile *string `json:"log_file,omitempty"`
 }
 
 type readIn struct {
@@ -122,15 +123,26 @@ func handleConnect(ctx context.Context, req *mcp.CallToolRequest, in connectIn) 
 	serial := derefStr(in.Serial)
 	device := derefStr(in.Device)
 	speed := derefInt(in.Speed)
+	logFile := derefStr(in.LogFile)
 
 	// If already connected and the caller passed any parameter that conflicts
 	// with the live connection, force a reconnect so the new value actually
-	// takes effect. Empty / zero means "leave alone" (use default).
+	// takes effect. Empty / zero means "leave alone" (use default). A log_file
+	// that resolves to a different path than the active one is a conflict too —
+	// this is how a second workspace redirects the shared daemon's broadcast log
+	// to its own per-project file.
 	if c.IsConnected() {
 		st := c.Status()
+		logConflict := false
+		if logFile != "" {
+			if p, err := rttcore.ResolveLogPath(logFile); err == nil && p != st.LogFile {
+				logConflict = true
+			}
+		}
 		conflict := (device != "" && device != st.DeviceName) ||
 			(speed != 0 && speed != st.Speed) ||
-			(serial != "" && serial != st.Serial)
+			(serial != "" && serial != st.Serial) ||
+			logConflict
 		if !conflict {
 			return text(fmt.Sprintf(
 				"Already connected to J-Link device '%s' (serial: %s, speed: %d kHz)\nRTT monitoring active on channel %d (shared connection)",
@@ -140,7 +152,7 @@ func handleConnect(ctx context.Context, req *mcp.CallToolRequest, in connectIn) 
 		c.Disconnect()
 	}
 
-	if err := c.Connect(serial, device, speed); err != nil {
+	if err := c.Connect(serial, device, speed, logFile); err != nil {
 		return text("Failed to connect to J-Link.\n\nError:\n" + err.Error()), nil, nil
 	}
 	st := c.Status()
@@ -180,7 +192,10 @@ func handleReadLog(ctx context.Context, req *mcp.CallToolRequest, in readLogIn) 
 	defer c.TouchIdle()
 	data := c.ReadLogTail(derefInt(in.MaxBytes))
 	if data == "" {
-		return text("(no RTT log yet — connect first)"), nil, nil
+		if !c.IsConnected() {
+			return text("J-Link is not connected — call jlink_connect first (nothing to poll; stop polling until connected)."), nil, nil
+		}
+		return text("(no RTT log yet)"), nil, nil
 	}
 	return text(data), nil, nil
 }
@@ -193,7 +208,9 @@ func handleReadRaw(ctx context.Context, req *mcp.CallToolRequest, in readRawIn) 
 		offset = *in.Offset
 	}
 	data, next := c.ReadLogRaw(offset, derefInt(in.MaxBytes))
-	out, _ := json.Marshal(map[string]any{"data": data, "next_offset": next})
+	// Surface live connection state so a polling monitor/agent can stop when the
+	// probe is not connected instead of busy-looping on empty reads.
+	out, _ := json.Marshal(map[string]any{"data": data, "next_offset": next, "connected": c.IsConnected()})
 	return text(string(out)), nil, nil
 }
 
@@ -312,7 +329,8 @@ func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*
   Speed: %d kHz
   Channel: %d
   Buffer Size: %d entries
-`, st.Connected, st.RTTStarted, st.DeviceName, st.Serial, st.Speed, st.Channel, st.RingBufferSize)), nil, nil
+  Log File: %s
+`, st.Connected, st.RTTStarted, st.DeviceName, st.Serial, st.Speed, st.Channel, st.RingBufferSize, st.LogFile)), nil, nil
 }
 
 func handleClear(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {

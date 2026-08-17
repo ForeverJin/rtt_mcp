@@ -73,10 +73,10 @@ test('McpClient: start() sends initialize and sets initialized flag', async () =
   assert.equal(c.initialized, true);
 });
 
-test('McpClient: listTools returns 11 Go tools with expected names', async () => {
+test('McpClient: listTools returns 12 Go tools with expected names', async () => {
   const c = await makeClient();
   const tools = await c.listTools();
-  assert.equal(tools.length, 11);
+  assert.equal(tools.length, 12);
   const names = tools.map((t) => t.name).sort();
   assert.deepEqual(names, [
     'jlink_connect',
@@ -89,6 +89,7 @@ test('McpClient: listTools returns 11 Go tools with expected names', async () =>
     'rtt_read',
     'rtt_read_log',
     'rtt_read_raw',
+    'rtt_wait',
     'rtt_write',
   ]);
 });
@@ -103,6 +104,20 @@ test('McpClient: jlink_connect text mentions device and speed', async () => {
   // jlink_status.
   assert.match(result.content[0].text, /Cortex-M0\+/);
   assert.match(result.content[0].text, /1000 kHz/);
+});
+
+test('McpClient: rtt_wait wakes on new mock output and returns JSON', async () => {
+  const c = await makeClient();
+  await c.callTool('jlink_connect', { device: 'Cortex-M0+', speed: 1000 });
+  // No pattern => wake on ANY new broadcast-log output. The mock backend emits
+  // a periodic heartbeat, so this should match well within the timeout.
+  const result = await c.callTool('rtt_wait', { timeout_ms: 3000 });
+  assert.equal(result.content[0].type, 'text');
+  const j = JSON.parse(result.content[0].text);
+  assert.equal(j.matched, true);
+  assert.equal(j.timed_out, false);
+  assert.equal(j.connected, true);
+  assert.ok(j.data.length > 0, 'should return the captured output');
 });
 
 test('McpClient: unknown tool name throws protocol error', async () => {

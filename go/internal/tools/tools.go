@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -49,6 +51,12 @@ func Register(s *mcp.Server) {
 			Name:        "rtt_read_raw",
 			Description: `Read new bytes from the broadcast log starting at a byte offset. Non-draining and multi-consumer safe: ideal for a continuous monitor that must coexist with other readers without stealing their data. Pass the returned next_offset as 'offset' on the next call; if the log rotated (next_offset > file size), pass offset=0. Returns JSON: {"data": "...", "next_offset": N, "connected": bool}. When "connected" is false the J-Link is NOT connected — stop polling and call jlink_connect first.`,
 		}, handleReadRaw)
+
+	mcp.AddTool(s,
+		&mcp.Tool{
+			Name:        "rtt_wait",
+			Description: "Block until new RTT output appears (or a regex matches it) or the timeout elapses, then return what arrived. Reads the non-draining broadcast log, so it never steals bytes from other consumers (rtt_read, the VSCode monitor). Use this instead of repeated rtt_read_raw polling when you expect a reply soon — e.g. rtt_write a command then rtt_wait for its response. Args: pattern (optional Go/RE2 regex; omit to wake on ANY new output), timeout_ms (default 5000, max 60000), max_bytes (default 8192). Returns JSON: {\"matched\": bool, \"timed_out\": bool, \"data\": \"...\", \"connected\": bool}. matched=false with timed_out=true means nothing (or no match) arrived in time.",
+		}, handleWait)
 
 	mcp.AddTool(s,
 		&mcp.Tool{
@@ -108,6 +116,12 @@ type readLogIn struct {
 type readRawIn struct {
 	Offset   *int64 `json:"offset,omitempty"`
 	MaxBytes *int   `json:"max_bytes,omitempty"`
+}
+
+type waitIn struct {
+	Pattern   *string `json:"pattern,omitempty"`
+	TimeoutMs *int    `json:"timeout_ms,omitempty"`
+	MaxBytes  *int    `json:"max_bytes,omitempty"`
 }
 
 type writeIn struct {
@@ -211,6 +225,45 @@ func handleReadRaw(ctx context.Context, req *mcp.CallToolRequest, in readRawIn) 
 	// Surface live connection state so a polling monitor/agent can stop when the
 	// probe is not connected instead of busy-looping on empty reads.
 	out, _ := json.Marshal(map[string]any{"data": data, "next_offset": next, "connected": c.IsConnected()})
+	return text(string(out)), nil, nil
+}
+
+// handleWait blocks until new RTT output (optionally matching a regex) arrives
+// or the timeout elapses, collapsing an N-poll wait-for-reply loop into one
+// call. It reads the non-draining broadcast log so it never steals bytes from
+// rtt_read or the VSCode monitor. req.Context() propagation lets the client
+// cancel a long wait.
+func handleWait(ctx context.Context, req *mcp.CallToolRequest, in waitIn) (*mcp.CallToolResult, any, error) {
+	c := rttcore.Get()
+	defer c.TouchIdle()
+	// Transparently re-establish the probe if idle-released; if it can't connect,
+	// there is nothing to wait for, so report it rather than blocking pointlessly.
+	if err := c.EnsureConnected(); err != nil {
+		out, _ := json.Marshal(map[string]any{"matched": false, "timed_out": false, "data": "", "connected": false, "error": err.Error()})
+		return text(string(out)), nil, nil
+	}
+	var re *regexp.Regexp
+	if in.Pattern != nil && *in.Pattern != "" {
+		r, err := regexp.Compile(*in.Pattern)
+		if err != nil {
+			return text("Invalid regex pattern: " + err.Error()), nil, nil
+		}
+		re = r
+	}
+	timeoutMs := derefInt(in.TimeoutMs)
+	if timeoutMs <= 0 {
+		timeoutMs = 5000
+	}
+	if timeoutMs > 60000 {
+		timeoutMs = 60000
+	}
+	matched, data := c.WaitFor(ctx, re, time.Duration(timeoutMs)*time.Millisecond, derefInt(in.MaxBytes))
+	out, _ := json.Marshal(map[string]any{
+		"matched":   matched,
+		"timed_out": !matched,
+		"data":      data,
+		"connected": c.IsConnected(),
+	})
 	return text(string(out)), nil, nil
 }
 
@@ -321,6 +374,10 @@ func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*
 		return text(err.Error()), nil, nil
 	}
 	st := c.Status()
+	lastLine := "never"
+	if !st.LastLineAt.IsZero() {
+		lastLine = fmt.Sprintf("%s (%s ago)", st.LastLineAt.Format("15:04:05.000"), time.Since(st.LastLineAt).Round(time.Millisecond))
+	}
 	return text(fmt.Sprintf(`J-Link Status:
   Connected: %v
   RTT Started: %v
@@ -330,7 +387,13 @@ func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*
   Channel: %d
   Buffer Size: %d entries
   Log File: %s
-`, st.Connected, st.RTTStarted, st.DeviceName, st.Serial, st.Speed, st.Channel, st.RingBufferSize, st.LogFile)), nil, nil
+  Lines since connect: %d
+  Bytes read: %d
+  Last line: %s
+  Dropped lines (ring overflow): %d
+  Saturated reads (possible device loss): %d
+`, st.Connected, st.RTTStarted, st.DeviceName, st.Serial, st.Speed, st.Channel, st.RingBufferSize, st.LogFile,
+		st.LinesSinceConnect, st.BytesRead, lastLine, st.DroppedLines, st.SaturatedReads)), nil, nil
 }
 
 func handleClear(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {

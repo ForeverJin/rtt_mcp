@@ -7,11 +7,14 @@ package rttcore
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"rtt-mcp-server/internal/config"
@@ -21,6 +24,11 @@ import (
 // maxLineBuf caps the partial-line accumulator before a newline arrives; on
 // overflow the tail half is retained (matching Python's _monitor_loop).
 const maxLineBuf = 4096
+
+// readChunk is the byte count requested from the probe per poll. A read that
+// returns exactly this many bytes is "saturated": the host may not be draining
+// the target RTT up-buffer fast enough, so device-side data loss is possible.
+const readChunk = 512
 
 // reconnectCooldown throttles transparent reconnect attempts from read/write
 // after one fails (e.g. the probe was physically unplugged). Within the
@@ -42,6 +50,14 @@ type Status struct {
 	Channel        int
 	RingBufferSize int    // current ring entries
 	LogFile        string // resolved broadcast-log path in use (empty before first connect)
+
+	// Data-flow health, since the last (re)connect. These let a caller tell a
+	// hung/silent target from a connected-but-idle one, and flag possible loss.
+	LinesSinceConnect int64     // device lines seen since connect
+	BytesRead         int64     // raw bytes read from the probe since connect
+	LastLineAt        time.Time // wall-clock of the last device line (zero = none yet)
+	DroppedLines      int64     // ring evictions before drain (rtt_read consumer loss)
+	SaturatedReads    int64     // polls that filled the read chunk (possible overflow)
 }
 
 // Core holds the singleton RTT engine state.
@@ -74,6 +90,15 @@ type Core struct {
 	// Cleared on any successful Connect; set on a failed EnsureConnected.
 	reconnectMu       sync.Mutex
 	lastReconnectFail time.Time
+
+	// Session data-flow stats, reset on each successful Connect. Atomics let the
+	// monitor goroutine update them without contending on c.mu, and let Status
+	// read them cheaply. They answer "is data actually flowing?" — the signal an
+	// agent needs to tell a hung target from a merely quiet one.
+	linesSinceConnect atomic.Int64 // device lines flushed since (re)connect
+	bytesRead         atomic.Int64 // raw bytes ingested since (re)connect
+	lastLineUnixNano  atomic.Int64 // wall-clock of the last device line (0 = none)
+	saturatedReads    atomic.Int64 // polls that filled readChunk (possible overflow)
 }
 
 var (
@@ -302,9 +327,25 @@ func (c *Core) Connect(serial, device string, speed int, logFile string) error {
 	c.reconnectMu.Lock()
 	c.lastReconnectFail = time.Time{}
 	c.reconnectMu.Unlock()
+	// Reset the per-session data-flow stats so "lines/bytes since connect" and
+	// the drop counters describe this session, not a prior one.
+	c.linesSinceConnect.Store(0)
+	c.bytesRead.Store(0)
+	c.lastLineUnixNano.Store(0)
+	c.saturatedReads.Store(0)
+	c.ring.resetDropped()
 	c.stopCh = make(chan struct{})
 	c.wg.Add(1)
 	go c.monitorLoop()
+
+	// Stamp a connect marker into the broadcast log + ring so a reader can see
+	// where a (re)connection happened — this is what explains a gap or a repeated
+	// boot banner after the idle watchdog released and re-took the probe.
+	marker := fmt.Sprintf("=== RTT connected: %s @ %d kHz, channel %d ===", c.device, c.speed, c.cfg.Channel)
+	if reconnect {
+		marker = fmt.Sprintf("=== RTT reconnected: %s @ %d kHz, channel %d ===", c.device, c.speed, c.cfg.Channel)
+	}
+	c.emitMarker(marker)
 
 	// 8. Arm the idle watchdog so the probe is released when no client uses it.
 	c.idleTimeout = time.Duration(c.cfg.IdleTimeoutSec) * time.Second
@@ -339,6 +380,10 @@ func (c *Core) Disconnect() {
 	} else {
 		c.lineMu.Unlock()
 	}
+
+	// Stamp a disconnect marker before the log closes so a reader sees the
+	// session boundary (pairs with the connect marker on the next bring-up).
+	c.emitMarker("=== RTT disconnected ===")
 
 	if c.log != nil {
 		c.log.close()
@@ -413,7 +458,7 @@ func (c *Core) monitorLoop() {
 			}
 			continue
 		}
-		data, err := c.backend.RTTRead(c.cfg.Channel, 512)
+		data, err := c.backend.RTTRead(c.cfg.Channel, readChunk)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[monitor] read error: %v\n", err)
 			select {
@@ -424,6 +469,11 @@ func (c *Core) monitorLoop() {
 			continue
 		}
 		if len(data) > 0 {
+			// A read that fills the whole chunk means more was likely waiting than
+			// we drained this poll: flag possible device-side overflow / loss.
+			if len(data) >= readChunk {
+				c.saturatedReads.Add(1)
+			}
 			c.ingest(data)
 		}
 		select {
@@ -436,6 +486,7 @@ func (c *Core) monitorLoop() {
 
 // ingest appends raw bytes to the line buffer and flushes every complete line.
 func (c *Core) ingest(data []byte) {
+	c.bytesRead.Add(int64(len(data)))
 	c.lineMu.Lock()
 	defer c.lineMu.Unlock()
 	c.lineBuf += string(data)
@@ -459,7 +510,22 @@ func (c *Core) flushLine(line string) {
 	if line == "" {
 		return
 	}
+	c.linesSinceConnect.Add(1)
+	c.lastLineUnixNano.Store(time.Now().UnixNano())
 	stamped := time.Now().Format("[15:04:05.000]") + " " + line + "\n"
+	if c.log != nil {
+		c.log.write(stamped)
+	}
+	fmt.Fprint(os.Stderr, stamped)
+	c.ring.append(stamped)
+}
+
+// emitMarker writes a session/status marker (connect, reconnect, disconnect) to
+// the broadcast log and ring without counting it as device output. Markers make
+// reconnect boundaries visible to a reader so gaps and repeated boot banners are
+// explained rather than mysterious.
+func (c *Core) emitMarker(msg string) {
+	stamped := time.Now().Format("[15:04:05.000]") + " " + msg + "\n"
 	if c.log != nil {
 		c.log.write(stamped)
 	}
@@ -608,7 +674,23 @@ func (c *Core) Status() Status {
 		Channel:        c.cfg.Channel,
 		RingBufferSize: c.ring.len(),
 		LogFile:        c.logPath,
+
+		LinesSinceConnect: c.linesSinceConnect.Load(),
+		BytesRead:         c.bytesRead.Load(),
+		LastLineAt:        c.lastLineTime(),
+		DroppedLines:      c.ring.droppedCount(),
+		SaturatedReads:    c.saturatedReads.Load(),
 	}
+}
+
+// lastLineTime converts the atomic last-line timestamp to a time.Time (zero if
+// no device line has been seen this session).
+func (c *Core) lastLineTime() time.Time {
+	nano := c.lastLineUnixNano.Load()
+	if nano == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nano)
 }
 
 // ResolveLogPath exposes the log-path resolution used by Connect so the
@@ -616,4 +698,72 @@ func (c *Core) Status() Status {
 // (Status.LogFile) when deciding whether a reconnect is needed.
 func ResolveLogPath(override string) (string, error) {
 	return resolveLogPath(override)
+}
+
+// WaitFor blocks until NEW broadcast-log output matches re (or, when re is nil,
+// until any new output arrives) or the timeout elapses. It reads the
+// non-draining broadcast log, so unlike rtt_read it never steals bytes from
+// other consumers (the VSCode monitor, another agent). This replaces N polling
+// round-trips with a single call — e.g. "send a command, then wait for its
+// reply" — and captures transient output that quick polls could miss.
+//
+// Returns whether it matched and the new output captured during the wait,
+// tail-capped to maxBytes. On timeout it returns false plus whatever arrived.
+func (c *Core) WaitFor(ctx context.Context, re *regexp.Regexp, timeout time.Duration, maxBytes int) (bool, string) {
+	if maxBytes <= 0 {
+		maxBytes = 8192
+	}
+	interval := time.Duration(c.cfg.PollIntervalMs) * time.Millisecond
+	if interval < 20*time.Millisecond {
+		interval = 20 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	// Start at the current end of the log so we wait for output produced from
+	// now on, not history already written before the call.
+	offset := c.logSize()
+	var acc strings.Builder
+	for {
+		if data, next := c.ReadLogRaw(offset, 65536); data != "" {
+			acc.WriteString(data)
+			offset = next
+		}
+		s := acc.String()
+		if re != nil {
+			if re.MatchString(s) {
+				return true, tailStr(s, maxBytes)
+			}
+		} else if s != "" {
+			return true, tailStr(s, maxBytes)
+		}
+		now := time.Now()
+		if !now.Before(deadline) {
+			return false, tailStr(s, maxBytes)
+		}
+		wait := interval
+		if d := deadline.Sub(now); d < wait {
+			wait = d
+		}
+		select {
+		case <-ctx.Done():
+			return false, tailStr(acc.String(), maxBytes)
+		case <-time.After(wait):
+		}
+	}
+}
+
+// logSize returns the current broadcast-log size (0 when not connected), used
+// as the starting offset for WaitFor.
+func (c *Core) logSize() int64 {
+	if c.log == nil {
+		return 0
+	}
+	return c.log.fileSize()
+}
+
+// tailStr keeps the last maxBytes of s (whole string when maxBytes <= 0).
+func tailStr(s string, maxBytes int) string {
+	if maxBytes > 0 && len(s) > maxBytes {
+		return s[len(s)-maxBytes:]
+	}
+	return s
 }

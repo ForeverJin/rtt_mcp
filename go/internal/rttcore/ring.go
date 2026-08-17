@@ -10,6 +10,10 @@ type ring struct {
 	mu  sync.Mutex
 	max int
 	buf []string
+	// dropped counts lines evicted at capacity since the last resetDropped.
+	// A non-zero value means an rtt_read (ring) consumer polled too slowly and
+	// lost lines — distinct from device-side loss (see Core.saturatedReads).
+	dropped int64
 }
 
 func newRing(max int) *ring {
@@ -20,11 +24,14 @@ func newRing(max int) *ring {
 }
 
 // append adds a line, dropping the oldest when at capacity (deque maxlen).
+// Evictions are tallied so a consumer can detect ring overflow (lines produced
+// faster than rtt_read drained them).
 func (r *ring) append(s string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.buf = append(r.buf, s)
 	if len(r.buf) > r.max {
+		r.dropped += int64(len(r.buf) - r.max)
 		r.buf = r.buf[len(r.buf)-r.max:]
 	}
 }
@@ -54,6 +61,22 @@ func (r *ring) len() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.buf)
+}
+
+// droppedCount returns the number of lines evicted at capacity since the last
+// resetDropped (reported by jlink_status as ring-consumer loss).
+func (r *ring) droppedCount() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dropped
+}
+
+// resetDropped zeroes the eviction tally, called on each (re)connect so the
+// count describes the current session.
+func (r *ring) resetDropped() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dropped = 0
 }
 
 func join(ss []string) string {

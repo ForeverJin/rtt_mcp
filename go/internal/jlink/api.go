@@ -38,6 +38,7 @@ var (
 	jlinkTIFSelect     func(iface int32) int32
 	jlinkSetSpeed      func(speed uint32)
 	jlinkConnect       func() int32
+	jlinkResetNoHalt   func()
 	jlinkExecCommand   func(cmd *byte) int32
 	jlinkReadMemEx     func(addr uint32, numBytes uint32, buf *byte, accessWidth uint32, handle uintptr) int32
 	jlinkCore2CoreName func(cpu int32, buf *byte, bufSize int32)
@@ -101,6 +102,7 @@ func registerSymbols() {
 		{&jlinkTIFSelect, "JLINKARM_TIF_Select", true},
 		{&jlinkSetSpeed, "JLINKARM_SetSpeed", true},
 		{&jlinkConnect, "JLINKARM_Connect", true},
+		{&jlinkResetNoHalt, "JLINKARM_ResetNoHalt", false},
 		{&jlinkExecCommand, "JLINKARM_ExecCommand", true},
 		{&jlinkReadMemEx, "JLINKARM_ReadMemEx", true},
 		{&jlinkCore2CoreName, "JLINKARM_Core2CoreName", false},

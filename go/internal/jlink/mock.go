@@ -78,6 +78,10 @@ func (m *mockBackend) SetTifSWD()                   {}
 func (m *mockBackend) SetSpeed(int)                 {}
 func (m *mockBackend) ConnectDevice(d string) error { return nil }
 
+// ResetNoHalt is a no-op in software: there is no target to restart, so the
+// mock just reports success so the tool plumbing can be exercised.
+func (m *mockBackend) ResetNoHalt() error { return nil }
+
 func (m *mockBackend) CoreName() string    { return m.core }
 func (m *mockBackend) ProductName() string { return m.product }
 

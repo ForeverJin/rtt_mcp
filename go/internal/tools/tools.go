@@ -1,8 +1,8 @@
 // Package tools registers the RTT MCP tools on a server and dispatches
 // them to the rttcore singleton. Tool names, argument schemas and result text
 // are kept byte-for-byte compatible with the Python server so the VSCode
-// extension and Claude Code see an identical surface (rtt_wait and
-// jlink_read_mem are Go-only additions).
+// extension and Claude Code see an identical surface (rtt_wait, jlink_read_mem
+// and jlink_reset are Go-only additions).
 package tools
 
 import (
@@ -90,6 +90,12 @@ func Register(s *mcp.Server) {
 			Name:        "jlink_read_mem",
 			Description: "Read 32-bit words from target memory or memory-mapped peripheral registers over the debug interface. Non-intrusive: the core keeps running and an active RTT session is unaffected (ARM peripheral registers live at 0x40000000+). addr is hex with or without the 0x prefix (e.g. \"0x20000000\" or \"40021000\"); count is the number of 32-bit words (default 16, max 4096 — use larger counts to dump big regions in fewer round-trips). Returns a hex dump, 4 words per line. Core registers (R0-PC/SP) are deliberately not exposed — reading them would halt the core.",
 		}, handleReadMem)
+
+	mcp.AddTool(s,
+		&mcp.Tool{
+			Name:        "jlink_reset",
+			Description: "Reset the target MCU and let it resume running (reset-no-halt). Non-halting: the RTT session stays attached across the reset — the control-block address is fixed by firmware layout and is re-initialized as the target boots, so boot output flows into the RTT log. A '=== target reset ===' marker is stamped into the broadcast log to mark the boundary. To capture boot output, follow with rtt_wait.",
+		}, handleReset)
 
 	mcp.AddTool(s,
 		&mcp.Tool{
@@ -401,6 +407,20 @@ func handleReadMem(ctx context.Context, req *mcp.CallToolRequest, in readMemIn) 
 		return text(fmt.Sprintf("Memory read at 0x%08X failed: %v", addr, err)), nil, nil
 	}
 	return text(hexDump(addr, words)), nil, nil
+}
+
+// handleReset serves jlink_reset: reset the target without halting so the
+// live RTT session rides through the reboot and captures the boot banner.
+func handleReset(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+	c := rttcore.Get()
+	defer c.TouchIdle()
+	if err := c.EnsureConnected(); err != nil {
+		return text(err.Error()), nil, nil
+	}
+	if err := c.ResetTarget(); err != nil {
+		return text("Reset failed: " + err.Error()), nil, nil
+	}
+	return text("Target reset (no halt). RTT session continues — use rtt_wait to capture boot output."), nil, nil
 }
 
 func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {

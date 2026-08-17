@@ -219,6 +219,7 @@ claude mcp add --scope user rtt "$BIN"
 | `rtt_read_log` | Read the tail of the broadcast log (non-draining; full output even while another client streams) |
 | `rtt_read_raw` | Read new log bytes from a byte offset (non-draining, multi-consumer safe; returns `{data, next_offset}`) |
 | `jlink_read_mem` | Read 32-bit words from target memory / memory-mapped peripheral registers (non-intrusive, hex dump; core registers deliberately not exposed) |
+| `jlink_reset` | Reset the target MCU without halting (reset-no-halt); RTT session rides through the reboot, a `=== target reset ===` marker is stamped into the log |
 | `rtt_write` | Write data to RTT down-buffer |
 | `rtt_clear` | Clear the RTT ring buffer |
 
@@ -279,7 +280,7 @@ Wrote 7 bytes to RTT channel 0
 | `rtt-mcp-server serve` | Claude Code 入口；daemon 可达则代理，不可达则回退为直接拥有者 |
 | `internal/rttcore` | 单例引擎：监视 goroutine、ring buffer、广播日志、轮转 |
 | `internal/jlink` | purego FFI：动态加载 JLinkARM/JLink_x64、符号绑定、mock backend |
-| `internal/tools` | 13 个 MCP 工具（名称/参数/结果与原 Python 1:1 对齐，外加 `rtt_wait`、`jlink_read_mem`、`rtt_list_supported_devices`、`rtt_check_device`） |
+| `internal/tools` | 14 个 MCP 工具（名称/参数/结果与原 Python 1:1 对齐，外加 `rtt_wait`、`jlink_read_mem`、`jlink_reset`、`rtt_list_supported_devices`、`rtt_check_device`） |
 | `internal/transport` | `serve`（stdio）、`daemon`（HTTP/SSE）、`bridge`（stdio↔SSE）的传输层 |
 | `internal/config` | 环境变量统一读取（`JLINK_*` / `RTT_*`，与原 Python 同名同默认） |
 

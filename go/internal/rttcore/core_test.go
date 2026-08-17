@@ -194,6 +194,25 @@ func TestReadMem_DefaultAndCappedCount(t *testing.T) {
 	}
 }
 
+// ResetTarget requires a live connection and stamps the boundary marker into
+// the broadcast log on success.
+func TestResetTarget(t *testing.T) {
+	c := NewCore(jlink.NewMockBackend(), testConfig(t))
+	if err := c.ResetTarget(); err == nil {
+		t.Fatal("ResetTarget before connect: want error, got nil")
+	}
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := c.ResetTarget(); err != nil {
+		t.Fatalf("ResetTarget: %v", err)
+	}
+	if got := c.ReadLogTail(65536); !strings.Contains(got, "=== target reset ===") {
+		t.Fatalf("reset marker missing from log; tail = %q", got)
+	}
+}
+
 // burstBackend wraps the mock but serves readChunk-sized reads for the first
 // few polls, exercising the monitor's saturated-read path (immediate re-poll,
 // no interval sleep) without hardware.

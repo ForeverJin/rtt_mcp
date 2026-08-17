@@ -111,6 +111,14 @@ func (b *puregoBackend) ConnectDevice(device string) error {
 	return nil
 }
 
+func (b *puregoBackend) ResetNoHalt() error {
+	if jlinkResetNoHalt == nil {
+		return errors.New("JLINKARM_ResetNoHalt not loaded")
+	}
+	jlinkResetNoHalt()
+	return nil
+}
+
 func (b *puregoBackend) CoreName() string {
 	if jlinkCore2CoreName == nil {
 		return ""

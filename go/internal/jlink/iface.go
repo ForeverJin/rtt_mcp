@@ -31,6 +31,12 @@ type RTTBackend interface {
 	// by JLINKARM_Connect().
 	ConnectDevice(device string) error
 
+	// ResetNoHalt resets the target and lets it resume execution (SYSRESETREQ
+	// style per the DLL's configured reset type). The RTT session rides
+	// through: the control-block address is fixed by the firmware layout and
+	// its contents are re-initialized as the target boots.
+	ResetNoHalt() error
+
 	// CoreName returns the connected core's name (best-effort, may be "").
 	CoreName() string
 

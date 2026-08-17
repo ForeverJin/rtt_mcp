@@ -633,6 +633,25 @@ func (c *Core) ReadLogRaw(offset int64, maxBytes int) (string, int64) {
 // halve its round-trips when dumping larger regions.
 const maxMemWords = 4096
 
+// ResetTarget resets the target MCU and lets it resume (reset-no-halt). A
+// marker is stamped first so the broadcast log shows the boundary: everything
+// after it is boot output from the fresh run. The RTT session stays attached —
+// the control-block address is fixed by the firmware's memory layout and the
+// target re-initializes its contents while booting, so the monitor picks up
+// the boot banner without a reconnect.
+func (c *Core) ResetTarget() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.backend.Opened() || !c.running {
+		return errors.New("J-Link is not connected")
+	}
+	if err := c.backend.ResetNoHalt(); err != nil {
+		return err
+	}
+	c.emitMarker("=== target reset ===")
+	return nil
+}
+
 // ReadMem reads count 32-bit words from target memory via the debug interface.
 // The access is non-intrusive (background memory read; the core keeps running),
 // which is why it is safe next to a live RTT session. Core registers are

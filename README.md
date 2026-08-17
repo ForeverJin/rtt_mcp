@@ -164,6 +164,30 @@ claude mcp add --scope user rtt "$BIN"
 - "连接 RTT 读取设备数据"
 - "查看设备状态"
 
+### ZCode（及其他 stdio MCP 客户端）集成
+
+服务器是 agent 无关的标准 stdio MCP（`serve` 模式），任何 MCP 客户端都能接入。ZCode 在**用户级配置文件** `~/.zcode/cli/config.json`（Windows: `C:\Users\<user>\zcode\cli\config.json`）的 `mcp.servers` 下注册：
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "rtt": {
+        "command": "D:/path/to/mcp-rtt-server/bin/rtt-mcp-server.exe",
+        "args": [],
+        "env": {}
+      }
+    }
+  }
+}
+```
+
+要点：
+
+- `command` 用正斜杠绝对路径（Windows spawn 不搜 PATHEXT）
+- 用户级注册 = 任意工作区可用；重启 ZCode 会话后自动连接，工具以 `mcp__rtt__*` 形式出现
+- **多 agent 共存**：ZCode 与 Claude Code 同时在线时，各自的 `serve` 进程都代理到 8765 端口同一个常驻 daemon（唯一 J-Link 拥有者），不争抢探针；持续监视用 `rtt_read_log` / `rtt_read_raw` 互不偷数据
+
 ### Claude Desktop 集成
 
 编辑 `%APPDATA%\Claude\claude_desktop_config.json`：

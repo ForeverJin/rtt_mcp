@@ -293,7 +293,7 @@ Wrote 7 bytes to RTT channel 0
 |----------|---------|-------------|
 | `JLINK_SERIAL` | (none) | J-Link serial number |
 | `JLINK_DEVICE` | `Cortex-M0+` | Target device name（泛用默认；按工程覆盖，如 `HC32L19x`/`STM32F103`） |
-| `JLINK_SPEED` | `4000` | SWD speed in kHz |
+| `JLINK_SPEED` | `12000` | SWD speed in kHz（实测甜点：4→12MHz 内存读取吞吐 56→95 KB/s，更高无增益——探针/DLL 钳位；不稳可降回 4000） |
 | `JLINK_RAM_START` | `0x20000000` | RAM 起始地址（扫描 RTT 控制块用，按 MCU 调整） |
 | `JLINK_RAM_SIZE` | `0x8000` | RAM 扫描窗口大小（字节，按 MCU 调整） |
 | `JLINK_LIB_PATH` / `RTT_LIB_PATH` | 自动探测 | 强制指定 SEGGER 库路径（`JLink_x64.dll` / `libjlinkarm.so` / `libjlinkarm.dylib`），覆盖默认 glob |

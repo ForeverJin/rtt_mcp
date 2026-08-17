@@ -40,7 +40,7 @@ func Register(s *mcp.Server) {
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "rtt_read",
-			Description: "Read accumulated RTT data from the ring buffer. Data is continuously collected by the background monitor thread. Use this to get output from the target device.",
+			Description: "Read accumulated RTT data from the ring buffer. Data is continuously collected by the background monitor thread. Use this to get output from the target device. Returns up to max_bytes (default 8192) of the most recent buffered data; the read drains the buffer.",
 		}, handleRead)
 
 	mcp.AddTool(s,
@@ -88,7 +88,7 @@ func Register(s *mcp.Server) {
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "jlink_read_mem",
-			Description: "Read 32-bit words from target memory or memory-mapped peripheral registers over the debug interface. Non-intrusive: the core keeps running and an active RTT session is unaffected (ARM peripheral registers live at 0x40000000+). addr is hex with or without the 0x prefix (e.g. \"0x20000000\" or \"40021000\"); count is the number of 32-bit words (default 16, max 1024). Returns a hex dump, 4 words per line. Core registers (R0-PC/SP) are deliberately not exposed — reading them would halt the core.",
+			Description: "Read 32-bit words from target memory or memory-mapped peripheral registers over the debug interface. Non-intrusive: the core keeps running and an active RTT session is unaffected (ARM peripheral registers live at 0x40000000+). addr is hex with or without the 0x prefix (e.g. \"0x20000000\" or \"40021000\"); count is the number of 32-bit words (default 16, max 4096 — use larger counts to dump big regions in fewer round-trips). Returns a hex dump, 4 words per line. Core registers (R0-PC/SP) are deliberately not exposed — reading them would halt the core.",
 		}, handleReadMem)
 
 	mcp.AddTool(s,

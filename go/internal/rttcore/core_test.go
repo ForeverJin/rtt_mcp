@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"rtt-mcp-server/internal/config"
 	"rtt-mcp-server/internal/jlink"
@@ -190,5 +191,51 @@ func TestReadMem_DefaultAndCappedCount(t *testing.T) {
 	}
 	if len(words) != maxMemWords {
 		t.Fatalf("capped count: len(words) = %d, want %d", len(words), maxMemWords)
+	}
+}
+
+// burstBackend wraps the mock but serves readChunk-sized reads for the first
+// few polls, exercising the monitor's saturated-read path (immediate re-poll,
+// no interval sleep) without hardware.
+type burstBackend struct {
+	jlink.RTTBackend
+	reads int
+}
+
+func newBurstBackend() *burstBackend { return &burstBackend{RTTBackend: jlink.NewMockBackend()} }
+
+func (b *burstBackend) RTTRead(channel, max int) ([]byte, error) {
+	b.reads++
+	if b.reads > 4 { // initial drain + 3 saturated monitor polls, then quiet
+		return nil, nil
+	}
+	return []byte(strings.Repeat("x", readChunk-1) + "\n"), nil
+}
+
+// A saturated burst must be fully ingested and tallied in SaturatedReads
+// without waiting out poll intervals — with a 1000ms interval and three
+// saturated chunks, interval-paced draining could not finish inside the 1.5s
+// deadline, so passing proves the adaptive re-poll path is taken. (The initial
+// drain in Connect predates the per-session stats reset, so only the three
+// monitor chunks count.)
+func TestMonitorBurstDrain(t *testing.T) {
+	b := newBurstBackend()
+	cfg := testConfig(t)
+	cfg.PollIntervalMs = 1000
+	c := NewCore(b, cfg)
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		st := c.Status()
+		if st.SaturatedReads >= 3 && st.LinesSinceConnect >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("burst not drained: saturated=%d lines=%d", st.SaturatedReads, st.LinesSinceConnect)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

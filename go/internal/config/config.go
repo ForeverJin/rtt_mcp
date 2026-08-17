@@ -15,7 +15,7 @@ import (
 type Config struct {
 	Serial         string // JLINK_SERIAL (empty → first available probe)
 	Device         string // JLINK_DEVICE (default Cortex-M0+)
-	Speed          int    // JLINK_SPEED in kHz (default 4000)
+	Speed          int    // JLINK_SPEED in kHz (default 12000; measured sweet spot — 4→12MHz nearly doubled memory-read throughput, higher added nothing since the probe/DLL clamps)
 	Channel        int    // RTT_CHANNEL (default 0)
 	RingBufferSize int    // RTT_RING_BUFFER_SIZE entries (default 100)
 	PollIntervalMs int    // RTT_POLL_INTERVAL_MS (default 10)
@@ -34,7 +34,7 @@ func Load() *Config {
 	return &Config{
 		Serial:         os.Getenv("JLINK_SERIAL"),
 		Device:         envStr("JLINK_DEVICE", "Cortex-M0+"),
-		Speed:          envInt("JLINK_SPEED", 4000),
+		Speed:          envInt("JLINK_SPEED", 12000),
 		Channel:        envInt("RTT_CHANNEL", 0),
 		RingBufferSize: envInt("RTT_RING_BUFFER_SIZE", 100),
 		PollIntervalMs: envInt("RTT_POLL_INTERVAL_MS", 10),

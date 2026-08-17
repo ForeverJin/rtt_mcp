@@ -25,10 +25,11 @@ import (
 // overflow the tail half is retained (matching Python's _monitor_loop).
 const maxLineBuf = 4096
 
-// readChunk is the byte count requested from the probe per poll. A read that
-// returns exactly this many bytes is "saturated": the host may not be draining
-// the target RTT up-buffer fast enough, so device-side data loss is possible.
-const readChunk = 512
+// readChunk is the byte count requested from the probe per poll. 2 KiB drains
+// a typical 1 KiB device up-buffer in a single DLL call; a read that returns
+// exactly this many bytes is "saturated" (more was likely waiting), which also
+// triggers an immediate re-poll — see monitorLoop.
+const readChunk = 2048
 
 // reconnectCooldown throttles transparent reconnect attempts from read/write
 // after one fails (e.g. the probe was physically unplugged). Within the
@@ -469,10 +470,15 @@ func (c *Core) monitorLoop() {
 			continue
 		}
 		if len(data) > 0 {
-			// A read that fills the whole chunk means more was likely waiting than
-			// we drained this poll: flag possible device-side overflow / loss.
 			if len(data) >= readChunk {
+				// A full chunk means more was likely waiting than this poll drained:
+				// flag possible device-side loss, then re-poll immediately instead of
+				// sleeping out the interval — a burst is drained at wire speed rather
+				// than capped at readChunk per interval. Each iteration does a real
+				// probe read, so this is work-bound, not a hot spin.
 				c.saturatedReads.Add(1)
+				c.ingest(data)
+				continue
 			}
 			c.ingest(data)
 		}
@@ -590,9 +596,11 @@ func deviceCandidates(device string, isValid func(string) int) []string {
 }
 
 // Read drains and returns the in-memory ring, keeping the last maxBytes.
+// The default matches ReadLogTail so a one-shot read after a quiet period
+// returns the whole backlog instead of silently truncating at 512 bytes.
 func (c *Core) Read(maxBytes int) string {
 	if maxBytes <= 0 {
-		maxBytes = 512
+		maxBytes = 8192
 	}
 	return c.ring.drain(maxBytes)
 }
@@ -620,9 +628,10 @@ func (c *Core) ReadLogRaw(offset int64, maxBytes int) (string, int64) {
 	return c.log.readRaw(offset, maxBytes)
 }
 
-// maxMemWords caps a single jlink_read_mem call (4 KiB) so a runaway count
-// cannot pull megabytes into one tool response.
-const maxMemWords = 1024
+// maxMemWords caps a single jlink_read_mem call (16 KiB) so a runaway count
+// cannot pull megabytes into one tool response, while still letting a caller
+// halve its round-trips when dumping larger regions.
+const maxMemWords = 4096
 
 // ReadMem reads count 32-bit words from target memory via the debug interface.
 // The access is non-intrusive (background memory read; the core keeps running),
@@ -732,8 +741,8 @@ func (c *Core) WaitFor(ctx context.Context, re *regexp.Regexp, timeout time.Dura
 		maxBytes = 8192
 	}
 	interval := time.Duration(c.cfg.PollIntervalMs) * time.Millisecond
-	if interval < 20*time.Millisecond {
-		interval = 20 * time.Millisecond
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
 	}
 	deadline := time.Now().Add(timeout)
 	// Start at the current end of the log so we wait for output produced from

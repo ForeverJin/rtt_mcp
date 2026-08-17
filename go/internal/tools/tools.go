@@ -1,14 +1,17 @@
-// Package tools registers the nine RTT MCP tools on a server and dispatches
+// Package tools registers the RTT MCP tools on a server and dispatches
 // them to the rttcore singleton. Tool names, argument schemas and result text
 // are kept byte-for-byte compatible with the Python server so the VSCode
-// extension and Claude Code see an identical surface.
+// extension and Claude Code see an identical surface (rtt_wait and
+// jlink_read_mem are Go-only additions).
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,6 +87,12 @@ func Register(s *mcp.Server) {
 
 	mcp.AddTool(s,
 		&mcp.Tool{
+			Name:        "jlink_read_mem",
+			Description: "Read 32-bit words from target memory or memory-mapped peripheral registers over the debug interface. Non-intrusive: the core keeps running and an active RTT session is unaffected (ARM peripheral registers live at 0x40000000+). addr is hex with or without the 0x prefix (e.g. \"0x20000000\" or \"40021000\"); count is the number of 32-bit words (default 16, max 1024). Returns a hex dump, 4 words per line. Core registers (R0-PC/SP) are deliberately not exposed — reading them would halt the core.",
+		}, handleReadMem)
+
+	mcp.AddTool(s,
+		&mcp.Tool{
 			Name:        "jlink_status",
 			Description: "Get current J-Link connection status and RTT buffer information.",
 		}, handleStatus)
@@ -127,6 +136,11 @@ type waitIn struct {
 type writeIn struct {
 	Channel *int    `json:"channel,omitempty"`
 	Data    *string `json:"data,omitempty"`
+}
+
+type readMemIn struct {
+	Addr  *string `json:"addr,omitempty"`
+	Count *int    `json:"count,omitempty"`
 }
 
 // ---- handlers ----
@@ -364,6 +378,31 @@ func handleCheckDevice(ctx context.Context, req *mcp.CallToolRequest, in checkDe
 	return text(fmt.Sprintf("Not supported: %q is NOT in the J-Link device database. Use rtt_list_supported_devices to find the exact name J-Link expects.", dev)), nil, nil
 }
 
+// handleReadMem serves jlink_read_mem: a non-intrusive debug-interface memory
+// read for inspecting variables and memory-mapped peripheral registers. It
+// follows the same connection pattern as read/write (transparent reconnect on
+// idle release), so it composes with a live RTT session instead of racing it.
+func handleReadMem(ctx context.Context, req *mcp.CallToolRequest, in readMemIn) (*mcp.CallToolResult, any, error) {
+	c := rttcore.Get()
+	defer c.TouchIdle()
+	if err := c.EnsureConnected(); err != nil {
+		return text(err.Error()), nil, nil
+	}
+	addrStr := strings.TrimSpace(derefStr(in.Addr))
+	if addrStr == "" {
+		return text("No address provided. Pass addr as hex, e.g. addr=\"0x20000000\" (RAM) or \"40021000\" (peripheral register)."), nil, nil
+	}
+	addr, err := parseHexAddr(addrStr)
+	if err != nil {
+		return text(fmt.Sprintf("Invalid address %q: %v", addrStr, err)), nil, nil
+	}
+	words, err := c.ReadMem(addr, derefInt(in.Count))
+	if err != nil {
+		return text(fmt.Sprintf("Memory read at 0x%08X failed: %v", addr, err)), nil, nil
+	}
+	return text(hexDump(addr, words)), nil, nil
+}
+
 func handleStatus(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 	c := rttcore.Get()
 	defer c.TouchIdle()
@@ -429,6 +468,40 @@ func derefInt(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// parseHexAddr parses a 32-bit address written in hex, with or without the 0x
+// prefix ("0x20000000" and "20000000" are equivalent). Hex-only is deliberate:
+// addresses are conventionally hex, and accepting decimal too would silently
+// reinterpret a bare "20000000" (decimal 0x1312D00) instead of erroring.
+func parseHexAddr(s string) (uint32, error) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	v, err := strconv.ParseUint(s, 16, 32)
+	if err != nil {
+		return 0, fmt.Errorf("want hex like \"0x20000000\" or \"20000000\"")
+	}
+	return uint32(v), nil
+}
+
+// hexDump formats words as 4-per-line with a running address prefix, the shape
+// agents and humans expect from a memory dump:
+//
+//	20000000: 20000000 20000004 20000008 2000000C
+func hexDump(base uint32, words []uint32) string {
+	var b bytes.Buffer
+	for i := 0; i < len(words); i += 4 {
+		end := i + 4
+		if end > len(words) {
+			end = len(words)
+		}
+		fmt.Fprintf(&b, "%08X:", base+uint32(i*4))
+		for _, w := range words[i:end] {
+			fmt.Fprintf(&b, " %08X", w)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // unescape interprets C-style escape sequences in s and returns the raw bytes.

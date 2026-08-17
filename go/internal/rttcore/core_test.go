@@ -148,3 +148,47 @@ func TestReconnect_PreservesLog(t *testing.T) {
 		t.Fatalf("log wiped on reconnect; tail = %q", got)
 	}
 }
+
+// ReadMem returns the mock's synthetic words (each word's own address as its
+// value), honours an explicit word count, and applies the runaway-count cap.
+func TestReadMem_MockWords(t *testing.T) {
+	c := NewCore(jlink.NewMockBackend(), testConfig(t))
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	words, err := c.ReadMem(0x20000000, 8)
+	if err != nil {
+		t.Fatalf("ReadMem: %v", err)
+	}
+	if len(words) != 8 {
+		t.Fatalf("len(words) = %d, want 8", len(words))
+	}
+	for i, w := range words {
+		if want := uint32(0x20000000 + i*4); w != want {
+			t.Fatalf("words[%d] = %#X, want %#X", i, w, want)
+		}
+	}
+}
+
+func TestReadMem_DefaultAndCappedCount(t *testing.T) {
+	c := NewCore(jlink.NewMockBackend(), testConfig(t))
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	words, err := c.ReadMem(0x20000000, 0)
+	if err != nil {
+		t.Fatalf("ReadMem(default): %v", err)
+	}
+	if len(words) != 16 {
+		t.Fatalf("default count: len(words) = %d, want 16", len(words))
+	}
+	words, err = c.ReadMem(0x20000000, 10_000_000)
+	if err != nil {
+		t.Fatalf("ReadMem(capped): %v", err)
+	}
+	if len(words) != maxMemWords {
+		t.Fatalf("capped count: len(words) = %d, want %d", len(words), maxMemWords)
+	}
+}

@@ -620,6 +620,24 @@ func (c *Core) ReadLogRaw(offset int64, maxBytes int) (string, int64) {
 	return c.log.readRaw(offset, maxBytes)
 }
 
+// maxMemWords caps a single jlink_read_mem call (4 KiB) so a runaway count
+// cannot pull megabytes into one tool response.
+const maxMemWords = 1024
+
+// ReadMem reads count 32-bit words from target memory via the debug interface.
+// The access is non-intrusive (background memory read; the core keeps running),
+// which is why it is safe next to a live RTT session. Core registers are
+// deliberately not offered: reading them would require halting the core.
+func (c *Core) ReadMem(addr uint32, count int) ([]uint32, error) {
+	if count <= 0 {
+		count = 16
+	}
+	if count > maxMemWords {
+		count = maxMemWords
+	}
+	return c.backend.MemoryRead32(addr, count)
+}
+
 // Write sends data to the down-buffer, returning bytes written (-1 on error).
 func (c *Core) Write(channel int, data string) int {
 	if channel < 0 {

@@ -82,7 +82,14 @@ func (m *mockBackend) CoreName() string    { return m.core }
 func (m *mockBackend) ProductName() string { return m.product }
 
 func (m *mockBackend) MemoryRead32(addr uint32, count int) ([]uint32, error) {
+	// Serve each word's own address as its value, so a hex dump is trivially
+	// self-verifying in tests and mock smoke runs (20000000: 20000000 20000004 ...).
+	// The synthetic pattern never contains the "SEGGER RTT" magic, so the
+	// control-block scan in Connect keeps taking the auto-locate path.
 	out := make([]uint32, count)
+	for i := range out {
+		out[i] = addr + uint32(i)*4
+	}
 	return out, nil
 }
 

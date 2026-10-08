@@ -26,6 +26,7 @@ type Config struct {
 	AuthToken      string // RTT_AUTH_TOKEN (empty → auth disabled)
 	LibPath        string // JLINK_LIB_PATH / RTT_LIB_PATH (empty → auto-detect SEGGER lib)
 	IdleTimeoutSec int    // RTT_IDLE_TIMEOUT seconds (default 30); 0 disables auto-disconnect
+	LineFlushMs    int    // RTT_LINE_FLUSH_MS (default 400); flush a partial line (no \n yet) after this much stream silence
 }
 
 // Load reads configuration from the environment, applying the documented
@@ -45,6 +46,7 @@ func Load() *Config {
 		AuthToken:      os.Getenv("RTT_AUTH_TOKEN"),
 		LibPath:        firstNonEmpty(os.Getenv("JLINK_LIB_PATH"), os.Getenv("RTT_LIB_PATH")),
 		IdleTimeoutSec: envInt("RTT_IDLE_TIMEOUT", 30),
+		LineFlushMs:    envInt("RTT_LINE_FLUSH_MS", 400),
 	}
 }
 

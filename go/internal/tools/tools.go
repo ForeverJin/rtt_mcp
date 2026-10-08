@@ -58,13 +58,13 @@ func Register(s *mcp.Server) {
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "rtt_wait",
-			Description: "Block until new RTT output appears (or a regex matches it) or the timeout elapses, then return what arrived. Reads the non-draining broadcast log, so it never steals bytes from other consumers (rtt_read, the VSCode monitor). Use this instead of repeated rtt_read_raw polling when you expect a reply soon — e.g. rtt_write a command then rtt_wait for its response. Args: pattern (optional Go/RE2 regex; omit to wake on ANY new output), timeout_ms (default 5000, max 60000), max_bytes (default 8192). Returns JSON: {\"matched\": bool, \"timed_out\": bool, \"data\": \"...\", \"connected\": bool}. matched=false with timed_out=true means nothing (or no match) arrived in time.",
+			Description: "Block until new RTT output appears (or a regex matches it) or the timeout elapses, then return what arrived. Reads the non-draining broadcast log, so it never steals bytes from other consumers (rtt_read, the VSCode monitor). Use this instead of repeated rtt_read_raw polling when you expect a reply soon — e.g. rtt_write a command then rtt_wait for its response. Args: pattern (optional Go/RE2 regex; omit to wake on ANY new output), timeout_ms (default 5000, max 60000), max_bytes (default 8192), offset (optional log start; omit for auto). By default the wait starts at the LAST rtt_write's position — a device replies in milliseconds while this call starts seconds later, so starting at the live log end would miss the reply; pass offset to pin the start (rtt_read_raw convention). Binary frames without a trailing newline (e.g. a Modbus reply) appear as their own log line after a short stream silence. Returns JSON: {\"matched\": bool, \"timed_out\": bool, \"data\": \"...\", \"connected\": bool}. matched=false with timed_out=true means nothing (or no match) arrived in time.",
 		}, handleWait)
 
 	mcp.AddTool(s,
 		&mcp.Tool{
 			Name:        "rtt_write",
-			Description: "Write data to RTT down-buffer (host -> device). C-style escapes are interpreted so control bytes can be sent: \\r \\n \\t \\0 \\\\ and \\xNN (two hex digits). If the data does not end with \\r or \\n, \\r\\n is appended automatically (matches the VSCode panel's webview input path) so a bare command like 'AT' reaches the device's line parser — pass a string already terminated to suppress. The target device must be running RTT with a down-buffer listener.",
+			Description: "Write data to RTT down-buffer (host -> device). C-style escapes are interpreted so control bytes can be sent: \\r \\n \\t \\0 \\\\ and \\xNN (two hex digits). If the data does not end with \\r or \\n, \\r\\n is appended automatically (matches the VSCode panel's webview input path) so a bare command like 'AT' reaches the device's line parser — pass a string already terminated to suppress. The target device must be running RTT with a down-buffer listener. Each write stamps a '>>> TX ch<N> <hex bytes>' marker into the broadcast log, and the following rtt_wait starts at this write by default, so request/response round-trips are captured end-to-end.",
 		}, handleWrite)
 
 	mcp.AddTool(s,
@@ -137,6 +137,7 @@ type waitIn struct {
 	Pattern   *string `json:"pattern,omitempty"`
 	TimeoutMs *int    `json:"timeout_ms,omitempty"`
 	MaxBytes  *int    `json:"max_bytes,omitempty"`
+	Offset    *int64  `json:"offset,omitempty"`
 }
 
 type writeIn struct {
@@ -277,7 +278,15 @@ func handleWait(ctx context.Context, req *mcp.CallToolRequest, in waitIn) (*mcp.
 	if timeoutMs > 60000 {
 		timeoutMs = 60000
 	}
-	matched, data := c.WaitFor(ctx, re, time.Duration(timeoutMs)*time.Millisecond, derefInt(in.MaxBytes))
+	// Start offset: an explicit `offset` pins it (same convention as
+	// rtt_read_raw); the default resumes from the last rtt_write's pre-write
+	// position, so a reply that arrived during the write→wait round-trip gap —
+	// the normal case for request/response protocols — is still captured.
+	var offset int64 = -1
+	if in.Offset != nil && *in.Offset >= 0 {
+		offset = *in.Offset
+	}
+	matched, data := c.WaitForFrom(ctx, re, time.Duration(timeoutMs)*time.Millisecond, derefInt(in.MaxBytes), offset)
 	out, _ := json.Marshal(map[string]any{
 		"matched":   matched,
 		"timed_out": !matched,

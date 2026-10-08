@@ -8,6 +8,7 @@ package rttcore
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -100,6 +101,16 @@ type Core struct {
 	bytesRead         atomic.Int64 // raw bytes ingested since (re)connect
 	lastLineUnixNano  atomic.Int64 // wall-clock of the last device line (0 = none)
 	saturatedReads    atomic.Int64 // polls that filled readChunk (possible overflow)
+
+	// Reply-window tracking for the rtt_write → rtt_wait flow. lastWriteOffset is
+	// the broadcast-log size snapshotted just before bytes go to the probe; a
+	// following rtt_wait (auto start) resumes from there so a reply that arrived
+	// BETWEEN the two tool calls — the normal case, since a device answers in
+	// milliseconds while the MCP round trip takes seconds — is still captured.
+	// lastDataNano is when ingest last saw bytes; the monitor uses it to flush a
+	// partial line (binary frame with no \n) after a short stream silence.
+	lastWriteOffset atomic.Int64
+	lastDataNano    atomic.Int64
 }
 
 var (
@@ -482,6 +493,7 @@ func (c *Core) monitorLoop() {
 			}
 			c.ingest(data)
 		}
+		c.flushPartialIfIdle()
 		select {
 		case <-c.stopCh:
 			return
@@ -490,9 +502,36 @@ func (c *Core) monitorLoop() {
 	}
 }
 
+// flushPartialIfIdle flushes the pending partial line (bytes with no \n yet)
+// once the stream has been silent for cfg.LineFlushMs. Binary frames — e.g. a
+// Modbus RTU reply written to the up-buffer — carry no newline, so without
+// this they sit invisible in the line accumulator until the next console line
+// happens to provide one, and in the log they end up GLUED to that line's
+// front. Flushing on silence makes each frame its own timestamped entry.
+func (c *Core) flushPartialIfIdle() {
+	timeout := time.Duration(c.cfg.LineFlushMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 400 * time.Millisecond
+	}
+	last := c.lastDataNano.Load()
+	if last == 0 || time.Since(time.Unix(0, last)) < timeout {
+		return
+	}
+	c.lineMu.Lock()
+	if c.lineBuf == "" {
+		c.lineMu.Unlock()
+		return
+	}
+	line := c.lineBuf
+	c.lineBuf = ""
+	c.lineMu.Unlock()
+	c.flushLine(line)
+}
+
 // ingest appends raw bytes to the line buffer and flushes every complete line.
 func (c *Core) ingest(data []byte) {
 	c.bytesRead.Add(int64(len(data)))
+	c.lastDataNano.Store(time.Now().UnixNano())
 	c.lineMu.Lock()
 	defer c.lineMu.Unlock()
 	c.lineBuf += string(data)
@@ -671,11 +710,39 @@ func (c *Core) Write(channel int, data string) int {
 	if channel < 0 {
 		channel = c.cfg.Channel
 	}
+	// Snapshot the broadcast-log position BEFORE the bytes hit the wire, then
+	// stamp a TX marker after — a subsequent rtt_wait with the auto start sees
+	// both the marker and any reply the device produced, even though the reply
+	// typically lands during the MCP round-trip gap before the wait begins.
+	c.lastWriteOffset.Store(c.logSize())
 	n, err := c.backend.RTTWrite(channel, []byte(data))
 	if err != nil {
 		return -1
 	}
+	c.emitMarker(fmt.Sprintf(">>> TX ch%d %s", channel, hexSpace([]byte(data))))
 	return n
+}
+
+// hexSpace renders b as space-separated uppercase hex, capped (with an
+// ellipsis) so a long TX burst cannot flood the broadcast log with one line.
+func hexSpace(b []byte) string {
+	const maxShow = 64
+	shown := b
+	if len(shown) > maxShow {
+		shown = shown[:maxShow]
+	}
+	s := strings.ToUpper(hex.EncodeToString(shown))
+	var sb strings.Builder
+	for i := 0; i+1 < len(s); i += 2 {
+		if sb.Len() > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(s[i : i+2])
+	}
+	if len(b) > maxShow {
+		fmt.Fprintf(&sb, " ... (%dB shown)", len(b))
+	}
+	return sb.String()
 }
 
 // ListDevices enumerates connected probes (best-effort).
@@ -753,9 +820,22 @@ func ResolveLogPath(override string) (string, error) {
 // round-trips with a single call — e.g. "send a command, then wait for its
 // reply" — and captures transient output that quick polls could miss.
 //
+// The start offset is chosen automatically (see WaitForFrom), which for the
+// rtt_write → rtt_wait flow means "since the last write" — covering the reply
+// window — rather than "since this call began".
+//
 // Returns whether it matched and the new output captured during the wait,
 // tail-capped to maxBytes. On timeout it returns false plus whatever arrived.
 func (c *Core) WaitFor(ctx context.Context, re *regexp.Regexp, timeout time.Duration, maxBytes int) (bool, string) {
+	return c.WaitForFrom(ctx, re, timeout, maxBytes, -1)
+}
+
+// WaitForFrom is WaitFor with an explicit start offset. offset < 0 selects the
+// automatic start: the last rtt_write's pre-write log position when one exists
+// and still points into the current log (a rotation or log-path switch that
+// shrank the file falls back to the live end), else the live end of the log.
+// offset >= 0 pins the start exactly (same convention as rtt_read_raw).
+func (c *Core) WaitForFrom(ctx context.Context, re *regexp.Regexp, timeout time.Duration, maxBytes int, offset int64) (bool, string) {
 	if maxBytes <= 0 {
 		maxBytes = 8192
 	}
@@ -764,9 +844,9 @@ func (c *Core) WaitFor(ctx context.Context, re *regexp.Regexp, timeout time.Dura
 		interval = 10 * time.Millisecond
 	}
 	deadline := time.Now().Add(timeout)
-	// Start at the current end of the log so we wait for output produced from
-	// now on, not history already written before the call.
-	offset := c.logSize()
+	if offset < 0 {
+		offset = c.autoWaitStart()
+	}
 	var acc strings.Builder
 	for {
 		if data, next := c.ReadLogRaw(offset, 65536); data != "" {
@@ -795,6 +875,18 @@ func (c *Core) WaitFor(ctx context.Context, re *regexp.Regexp, timeout time.Dura
 		case <-time.After(wait):
 		}
 	}
+}
+
+// autoWaitStart picks the default WaitForFrom start: the reply window opened by
+// the last rtt_write, clamped to the live log (a write offset beyond the
+// current file means the log rotated or switched paths since — start at the
+// live end instead of replaying a stale, larger history).
+func (c *Core) autoWaitStart() int64 {
+	end := c.logSize()
+	if w := c.lastWriteOffset.Load(); w > 0 && w <= end {
+		return w
+	}
+	return end
 }
 
 // logSize returns the current broadcast-log size (0 when not connected), used

@@ -1,6 +1,7 @@
 package rttcore
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -254,6 +255,105 @@ func TestMonitorBurstDrain(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("burst not drained: saturated=%d lines=%d", st.SaturatedReads, st.LinesSinceConnect)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// silentBackend suppresses the mock's heartbeat so a test's log contains
+// exactly what the test itself ingests (the heartbeat every 10ms would both
+// flood the log and keep the stream from ever going idle).
+type silentBackend struct {
+	jlink.RTTBackend
+}
+
+func (b *silentBackend) RTTRead(channel, max int) ([]byte, error) { return nil, nil }
+
+// Regression test for the rtt_write → rtt_wait reply-window bug: a device
+// answers within milliseconds, but the MCP round trip delays the rtt_wait by
+// seconds, so the reply is already IN the broadcast log before the wait starts.
+// The auto start must therefore resume from the last write's pre-write offset
+// (not the live log end) so the reply and the TX marker are both returned.
+func TestWaitCoversReplyBetweenWriteAndWait(t *testing.T) {
+	c := NewCore(&silentBackend{jlink.NewMockBackend()}, testConfig(t))
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if n := c.Write(0, "\x01\x03"); n != 2 {
+		t.Fatalf("Write = %d bytes, want 2", n)
+	}
+	// The reply lands AFTER the write but BEFORE the wait begins.
+	c.ingest([]byte("REPLY-PAYLOAD\n"))
+	matched, data := c.WaitFor(context.Background(), nil, 100*time.Millisecond, 8192)
+	if !matched {
+		t.Fatalf("wait missed the reply that arrived before the call: matched=%v data=%q", matched, data)
+	}
+	if !strings.Contains(data, "REPLY-PAYLOAD") {
+		t.Fatalf("reply missing from wait output: %q", data)
+	}
+	if !strings.Contains(data, ">>> TX ch0 01 03") {
+		t.Fatalf("TX marker missing from wait output: %q", data)
+	}
+}
+
+// An explicit offset pins the wait start exactly (rtt_read_raw convention),
+// independent of any prior write.
+func TestWaitExplicitOffset(t *testing.T) {
+	c := NewCore(&silentBackend{jlink.NewMockBackend()}, testConfig(t))
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	c.ingest([]byte("old-line\n"))
+	offset := c.logSize()
+	c.ingest([]byte("new-line\n"))
+	matched, data := c.WaitForFrom(context.Background(), nil, 100*time.Millisecond, 8192, offset)
+	if !matched || !strings.Contains(data, "new-line") {
+		t.Fatalf("explicit-offset wait missed new-line: matched=%v data=%q", matched, data)
+	}
+	if strings.Contains(data, "old-line") {
+		t.Fatalf("explicit-offset wait leaked pre-offset content: %q", data)
+	}
+}
+
+// A stale write offset beyond the current log size (rotation or log-path
+// switch shrank the file) must fall back to the live end, not replay history.
+func TestWaitAutoOffsetFallsBackAfterRotation(t *testing.T) {
+	c := NewCore(&silentBackend{jlink.NewMockBackend()}, testConfig(t))
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	c.ingest([]byte("line-one\n"))
+	c.lastWriteOffset.Store(c.logSize() + 10_000) // stale: beyond any real size
+	c.ingest([]byte("line-two\n"))
+	if start := c.autoWaitStart(); start != c.logSize() {
+		t.Fatalf("autoWaitStart = %d, want live end %d", start, c.logSize())
+	}
+}
+
+// Binary frames carry no newline, so without an idle flush they would sit in
+// the line accumulator until the next console line glued them to its front.
+// After LineFlushMs of stream silence the partial line must become its own
+// timestamped log entry.
+func TestPartialLineIdleFlush(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.LineFlushMs = 50
+	c := NewCore(&silentBackend{jlink.NewMockBackend()}, cfg)
+	defer c.Disconnect()
+	if err := c.Connect("", "", 0, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	c.ingest([]byte{0x01, 0x03, 0x08, 0xAB}) // no trailing \n
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		tail := c.ReadLogTail(65536)
+		if strings.Contains(tail, "01 03 08") || strings.Contains(tail, "\x01\x03\x08") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("partial line never flushed on idle; tail = %q", tail)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
